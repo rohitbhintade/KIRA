@@ -252,6 +252,7 @@ class AlgorithmEngine:
 
     def Run(self):
         """Main Data Loop."""
+        import time as _time
         logger.info(f"🚀 Starting Engine Loop... (Backtest={self.BacktestMode})")
         
         # Initialize Portfolio from DB (First Sync)
@@ -260,21 +261,39 @@ class AlgorithmEngine:
         # Inject Initial Equity Point (t=0) for Statistics
         start_ts = datetime.now()
         if self.BacktestMode and getattr(self, 'LocalData', None) and len(self.LocalData) > 0:
-            # Use timestamp of first tick minus 1 sec
             start_ts = datetime.fromtimestamp(self.LocalData[0]['timestamp'] / 1000.0) - timedelta(seconds=1)
             
         self.EquityCurve.append({'timestamp': start_ts, 'equity': self.Algorithm.Portfolio.TotalPortfolioValue})
         
-        # LOCAL DATA MODE
+        # LOCAL DATA MODE (Backtest) ─ Ultra-Fast In-Memory Path
         if getattr(self, 'LocalData', None) is not None:
             delay = 0
-            if self.Speed == 'medium': delay = 0.05 # Reduced delay for medium
-            elif self.Speed == 'slow': delay = 0.1 # Reduced delay for slow
+            if self.Speed == 'medium': delay = 0.05
+            elif self.Speed == 'slow': delay = 0.1
 
+            # ── Open persistent session (zero per-trade connections) ──
+            if self.BacktestMode and hasattr(self.Exchange, 'begin_session'):
+                initial_bal = self.Algorithm.Portfolio.get('Cash', 100000.0)
+                self.Exchange.begin_session(initial_bal)
+
+            _t0 = _time.time()
+            _n  = len(self.LocalData)
             for tick in self.LocalData:
                 self.ProcessTick(tick)
-                if delay > 0: time.sleep(delay)
-            
+                if self.BacktestMode and hasattr(self.Exchange, '_bt_tick_count'):
+                    self.Exchange._bt_tick_count += 1
+                if delay > 0: _time.sleep(delay)
+
+            _elapsed = _time.time() - _t0
+            _tps = _n / _elapsed if _elapsed > 0 else 0
+            logger.info(f"⚡ Tick loop done: {_n:,} ticks in {_elapsed:.2f}s = {_tps:,.0f} ticks/sec")
+
+            # ── Flush all buffered orders + positions to DB in one shot ──
+            if self.BacktestMode and hasattr(self.Exchange, 'flush_session'):
+                # Sync final in-memory balance to algorithm portfolio
+                self.Algorithm.Portfolio['Cash'] = self.Exchange._bt_balance
+                self.Exchange.flush_session()
+
             # Finalize Equity Curve
             self.SyncPortfolio()
             equity = self.Algorithm.Portfolio.get('TotalPortfolioValue', 0.0)
@@ -309,12 +328,35 @@ class AlgorithmEngine:
         logger.info("🛑 Stopping Engine Loop requested.")
 
     def SyncPortfolio(self):
-        """Sync Portfolio state from DB to User Algorithm."""
+        """
+        Sync Portfolio state to User Algorithm.
+        BACKTEST: reads from in-memory exchange state (zero DB I/O).
+        LIVE: reads from DB.
+        """
+        # ── Fast path for backtest: read from in-memory exchange ──
+        if self.BacktestMode and hasattr(self.Exchange, '_bt_balance') and self.Exchange._bt_balance > 0:
+            balance   = self.Exchange._bt_balance
+            positions = self.Exchange._bt_positions
+
+            self.Algorithm.Portfolio['Cash'] = balance
+
+            # Clear stale in-memory holdings first
+            for sym in list(self.Algorithm.Portfolio.keys()):
+                if sym not in ('Cash', 'TotalPortfolioValue'):
+                    self.Algorithm.Portfolio[sym] = SecurityHolding(sym, 0, 0.0)
+
+            # Apply current positions
+            for sym, state in positions.items():
+                if state['qty'] != 0:
+                    self.Algorithm.Portfolio[sym] = SecurityHolding(sym, state['qty'], state['avg_price'])
+
+            self.CalculatePortfolioValue()
+            return
+
+        # ── Standard DB-backed sync (live mode or pre-session backtest) ──
         conn = self.Exchange._get_conn()
-        cur = conn.cursor()
-        
+        cur  = conn.cursor()
         try:
-            # 1. Get Balance
             table = "backtest_portfolios" if self.BacktestMode else "portfolios"
             if self.BacktestMode:
                 cur.execute(f"SELECT balance FROM {table} WHERE user_id=%s AND run_id=%s", ('default_user', self.RunID))
@@ -323,52 +365,33 @@ class AlgorithmEngine:
             
             row = cur.fetchone()
             if not row:
-                # Create if missing (Engine should handle this init really)
-                self.Algorithm.Portfolio['Cash'] = 5000.0 
-                self.Algorithm.Portfolio['TotalPortfolioValue'] = 5000.0
+                self.Algorithm.Portfolio['Cash'] = 100000.0
+                self.Algorithm.Portfolio['TotalPortfolioValue'] = 100000.0
             else:
                 balance = float(row[0])
                 self.Algorithm.Portfolio['Cash'] = balance
-                self.Algorithm.Portfolio['TotalPortfolioValue'] = balance # Approximation
-    
-                # 2. Get Positions
+                self.Algorithm.Portfolio['TotalPortfolioValue'] = balance
+
                 pos_table = "backtest_positions" if self.BacktestMode else "positions"
-                
                 query = f"""
                     SELECT p.symbol, p.quantity, p.avg_price 
                     FROM {pos_table} p
                     JOIN {table} pf ON p.portfolio_id = pf.id
-                    WHERE pf.user_id = 'default_user' 
+                    WHERE pf.user_id = 'default_user'
                 """
                 if self.BacktestMode:
                     query += f" AND pf.run_id = '{self.RunID}'"
-                    
                 cur.execute(query)
-                rows = cur.fetchall()
-                
-                # Track symbols present in DB to identify stale ones
                 db_symbols = set()
-                
-                for r in rows:
-                    sym, qty, avg = r[0], int(r[1]), float(r[2])
+                for sym, qty, avg in cur.fetchall():
                     db_symbols.add(sym)
-                    
-                    security = SecurityHolding(sym, qty, avg)
-                    self.Algorithm.Portfolio[sym] = security
-                
-                # Clear STALE positions (present in memory but deleted from DB)
+                    self.Algorithm.Portfolio[sym] = SecurityHolding(sym, int(qty), float(avg))
                 for sym in list(self.Algorithm.Portfolio.keys()):
-                     if sym in ('Cash', 'TotalPortfolioValue'): continue
-                     if sym not in db_symbols:
-                          # Reset to 0
-                          # logger.info(f"🧹 Clearing Stale Position: {sym}")
-                          self.Algorithm.Portfolio[sym] = SecurityHolding(sym, 0, 0.0)
-    
-                # Update Total Value (Cash + Equity) using Realtime Calculator
-                self.CalculatePortfolioValue()
-                
-                logger.info(f"🔄 SyncPortfolio: Cash=₹{self.Algorithm.Portfolio.Cash:.2f}, Equity=₹{self.Algorithm.Portfolio.TotalPortfolioValue:.2f}")
+                    if sym not in ('Cash', 'TotalPortfolioValue') and sym not in db_symbols:
+                        self.Algorithm.Portfolio[sym] = SecurityHolding(sym, 0, 0.0)
 
+                self.CalculatePortfolioValue()
+                logger.info(f"🔄 SyncPortfolio: Cash=₹{self.Algorithm.Portfolio['Cash']:.2f}, Equity=₹{self.Algorithm.Portfolio['TotalPortfolioValue']:.2f}")
         except Exception as e:
             logger.error(f"SyncPortfolio Error: {e}")
         finally:

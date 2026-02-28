@@ -21,7 +21,7 @@ interface Trade {
     side: 'BUY' | 'SELL';
     quantity: number;
     price: number;
-    pnl: number;
+    pnl: number | null;
 }
 
 interface Stats {
@@ -103,7 +103,7 @@ export default function BacktestResultPage() {
             const gst = flat * 0.18;
             estBrokerage += flat + stt + gst;
 
-            if (t.pnl !== 0) {
+            if (t.pnl !== null && t.pnl !== undefined && t.pnl !== 0) {
                 currentEquity += t.pnl;
                 curve.push({
                     time: new Date(t.time).toLocaleTimeString(),
@@ -145,8 +145,8 @@ export default function BacktestResultPage() {
         } else {
             const netProfit = currentEquity - initialCash;
             const totalReturn = (netProfit / initialCash) * 100;
-            const wins = tradesData.filter(t => t.pnl > 0).length;
-            const tradesWithPnl = tradesData.filter(t => t.pnl !== 0).length;
+            const wins = tradesData.filter(t => t.pnl !== null && t.pnl > 0).length;
+            const tradesWithPnl = tradesData.filter(t => t.pnl !== null && t.pnl !== 0).length;
             const winRate = tradesWithPnl > 0 ? (wins / tradesWithPnl) * 100 : 0;
 
             setStats({
@@ -449,8 +449,13 @@ export default function BacktestResultPage() {
                                     </TableCell>
                                     <TableCell className="text-slate-300">{trade.quantity}</TableCell>
                                     <TableCell className="text-slate-300">₹{trade.price.toFixed(2)}</TableCell>
-                                    <TableCell className={trade.pnl > 0 ? "text-emerald-400 font-bold" : trade.pnl < 0 ? "text-red-400 font-bold" : "text-slate-500"}>
-                                        {trade.pnl !== 0 ? `₹${trade.pnl.toFixed(2)}` : '-'}
+                                    <TableCell className={`font-mono ${trade.pnl !== null && trade.pnl > 0 ? "text-emerald-400 font-bold" :
+                                            trade.pnl !== null && trade.pnl < 0 ? "text-red-400 font-bold" :
+                                                "text-slate-500"
+                                        }`}>
+                                        {trade.pnl !== null && trade.pnl !== 0
+                                            ? `${trade.pnl > 0 ? '+' : ''}₹${trade.pnl.toFixed(2)}`
+                                            : <span className="text-slate-600">—</span>}
                                     </TableCell>
                                 </TableRow>
                             ))}

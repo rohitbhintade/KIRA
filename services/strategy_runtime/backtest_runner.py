@@ -540,20 +540,33 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     universe_symbols = list(universe_symbols)
 
 
-    # 5. Fetch Data for Universe
-    all_ticks = []
-    
-    for sym in universe_symbols:
-        logger.info(f"📥 Fetching Data for {sym}...")
+    # 5. Fetch Data for Universe — parallel across all symbols
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import time as _time_br
+
+    def _fetch_symbol(sym):
         candles = fetch_historical_data(sym, start, end)
-        if not candles: continue
-        
-        for c in candles:
-             ts, o, h, l, c_price, v = c
-             candle_ticks = ohlc_to_ticks(ts, o, h, l, c_price, v)
-             for t in candle_ticks:
-                 t['symbol'] = sym
-                 all_ticks.append(t)
+        ticks = []
+        if candles:
+            for c in candles:
+                ts, o, h, l, c_price, v = c
+                for t in ohlc_to_ticks(ts, o, h, l, c_price, v):
+                    t['symbol'] = sym
+                    ticks.append(t)
+        return sym, ticks
+
+    all_ticks = []
+    _fetch_start = _time_br.time()
+    max_workers = min(len(universe_symbols), 16)  # Up to 16 parallel DB connections
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_fetch_symbol, sym): sym for sym in universe_symbols}
+        for future in as_completed(futures):
+            sym, ticks = future.result()
+            all_ticks.extend(ticks)
+            logger.info(f"📥 {sym}: {len(ticks)} ticks loaded")
+    
+    _fetch_elapsed = _time_br.time() - _fetch_start
+    logger.info(f"⚡ Parallel data fetch: {len(universe_symbols)} symbols, {len(all_ticks):,} ticks in {_fetch_elapsed:.2f}s")
                  
     # Sort by Timestamp to simulate market playback
     all_ticks.sort(key=lambda x: x['timestamp'])
