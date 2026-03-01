@@ -86,8 +86,14 @@ export default function BacktestResultPage() {
         fetchData();
     }, [runId]);
 
-    const processBacktestData = (tradesData: Trade[], statsData: Record<string, number> | null) => {
-        setTrades(tradesData);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const processBacktestData = (tradesData: any[], statsData: Record<string, number> | null) => {
+        // Map API stock_name → Trade.name (API resolves names via instruments table)
+        const mappedTrades: Trade[] = tradesData.map(t => ({
+            ...t,
+            name: t.stock_name || t.name || t.symbol?.replace(/^(NSE_EQ|BSE_EQ)\|/, '') || 'UNKNOWN',
+        }));
+        setTrades(mappedTrades);
 
         const initialCash = 100000;
         let currentEquity = initialCash;
@@ -450,8 +456,8 @@ export default function BacktestResultPage() {
                                     <TableCell className="text-slate-300">{trade.quantity}</TableCell>
                                     <TableCell className="text-slate-300">₹{trade.price.toFixed(2)}</TableCell>
                                     <TableCell className={`font-mono ${trade.pnl !== null && trade.pnl > 0 ? "text-emerald-400 font-bold" :
-                                            trade.pnl !== null && trade.pnl < 0 ? "text-red-400 font-bold" :
-                                                "text-slate-500"
+                                        trade.pnl !== null && trade.pnl < 0 ? "text-red-400 font-bold" :
+                                            "text-slate-500"
                                         }`}>
                                         {trade.pnl !== null && trade.pnl !== 0
                                             ? `${trade.pnl > 0 ? '+' : ''}₹${trade.pnl.toFixed(2)}`

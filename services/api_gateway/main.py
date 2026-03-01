@@ -402,9 +402,12 @@ def get_live_trades(limit: int = 250, conn = Depends(get_pg_conn)):
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT timestamp, symbol, transaction_type, quantity, price, coalesce(pnl, 0), symbol as stock_name
-            FROM executed_orders 
-            ORDER BY timestamp ASC LIMIT %s;
+            SELECT eo.timestamp, eo.symbol, eo.transaction_type, eo.quantity, eo.price, 
+                   coalesce(eo.pnl, 0),
+                   COALESCE(i.symbol, REPLACE(REPLACE(eo.symbol, 'NSE_EQ|', ''), 'BSE_EQ|', '')) as stock_name
+            FROM executed_orders eo
+            LEFT JOIN instruments i ON i.instrument_token = eo.symbol
+            ORDER BY eo.timestamp ASC LIMIT %s;
         """, (limit,))
         rows = cur.fetchall()
         return [
@@ -509,8 +512,10 @@ def get_backtest_trades(run_id: str, conn = Depends(get_pg_conn)):
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT bo.timestamp, bo.symbol, bo.transaction_type, bo.quantity, bo.price, bo.pnl, bo.symbol as stock_name
+            SELECT bo.timestamp, bo.symbol, bo.transaction_type, bo.quantity, bo.price, bo.pnl,
+                   COALESCE(i.symbol, REPLACE(REPLACE(bo.symbol, 'NSE_EQ|', ''), 'BSE_EQ|', '')) as stock_name
             FROM backtest_orders bo
+            LEFT JOIN instruments i ON i.instrument_token = bo.symbol
             WHERE bo.run_id = %s 
             ORDER BY bo.timestamp ASC;
         """, (run_id,))

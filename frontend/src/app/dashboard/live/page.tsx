@@ -216,12 +216,12 @@ export default function ProfessionalLiveDashboard() {
         }
     };
 
-    const getSymbolName = (symbol: string) => {
+    const getSymbolName = (symbol: string, stockName?: string) => {
+        // Prefer the API-resolved name from the instruments table
+        if (stockName && stockName !== symbol) return stockName;
         if (!symbol) return 'UNKNOWN';
-        if (symbol.includes('INE002A01018')) return 'RELIANCE INDUSTRIES';
-        if (symbol.includes('INE009A01021')) return 'INFOSYS LTD';
-        if (symbol.includes('INE467B01029')) return 'TATA CONSULTANCY';
-        return symbol.replace('NSE_EQ|', '');
+        // Strip exchange prefix for both NSE and BSE
+        return symbol.replace(/^(NSE_EQ|BSE_EQ)\|/, '');
     };
 
     if (loading) {
@@ -511,7 +511,7 @@ export default function ProfessionalLiveDashboard() {
                                                     {new Date(t.time).toLocaleString('en-US', { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                                                 </TableCell>
                                                 <TableCell className="py-3 font-medium text-slate-300">
-                                                    {getSymbolName(t.symbol)}
+                                                    {getSymbolName(t.symbol, t.stock_name)}
                                                 </TableCell>
                                                 <TableCell className="py-3">
                                                     <Badge variant={t.side === 'BUY' ? 'default' : 'destructive'} className={t.side === 'BUY' ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30' : 'bg-red-500/20 text-red-400 hover:bg-red-500/30'}>
