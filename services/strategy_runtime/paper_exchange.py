@@ -213,7 +213,17 @@ class PaperExchange:
         action      = signal['action'].upper()
         price       = float(signal['price'])
         strategy_id = signal.get('strategy_id', 'MANUAL')
-        trade_time  = signal.get('timestamp')
+
+        # Normalize timestamp: tick dicts carry ms epoch ints; Postgres needs datetime
+        raw_ts = signal.get('timestamp')
+        if isinstance(raw_ts, (int, float)):
+            from datetime import datetime as _dt
+            trade_time = _dt.utcfromtimestamp(raw_ts / 1000.0)
+        elif raw_ts is None:
+            from datetime import datetime as _dt
+            trade_time = _dt.utcnow()
+        else:
+            trade_time = raw_ts
 
         # Safety: Never trade Indices
         if "INDEX" in symbol.upper() or "Nifty 50" in symbol:

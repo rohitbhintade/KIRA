@@ -450,96 +450,150 @@ def run_backtest_process(run_id: str, request: BacktestRequest, strategy_file_pa
 def _compute_and_save_stats(run_id: str):
     """
     Compute and persist all financial statistics by reading trade data
-    directly from the database. This is independent of the engine process
-    and works whether the backtest completed naturally or was stopped.
+    directly from the database. Works regardless of how the backtest ended.
     """
-    import calculations
-    from datetime import timedelta
+    import calculations, timesync
+    from datetime import datetime, timedelta
 
     conn = get_db_connection()
-    cur = conn.cursor()
+    conn.autocommit = False
 
-    # Get initial cash from backtest_runs table if available, else default
-    initial_cap = 100000.0
     try:
-        cur.execute("SELECT initial_cash FROM backtest_runs WHERE run_id = %s", (run_id,))
-        row = cur.fetchone()
-        if row and row[0]:
-            initial_cap = float(row[0])
-    except:
-        pass  # Table may not exist, use default
+        cur = conn.cursor()
 
-    # Fetch ALL trades chronologically
-    cur.execute(
-        "SELECT timestamp, pnl FROM backtest_orders WHERE run_id=%s ORDER BY timestamp ASC",
-        (run_id,),
-    )
-    rows = cur.fetchall()
+        # ── Step 1: Get initial capital ──────────────────────────────────────
+        # IMPORTANT: if the table doesn't exist, rollback so the connection
+        # stays clean for the next query.
+        initial_cap = 100000.0
+        try:
+            cur.execute("SELECT initial_cash FROM backtest_runs WHERE run_id = %s", (run_id,))
+            row = cur.fetchone()
+            if row and row[0]:
+                initial_cap = float(row[0])
+        except Exception:
+            conn.rollback()   # ← CRITICAL: reset the aborted transaction
 
-    if not rows:
-        logger.warning(f"No trades found for {run_id}, cannot compute stats.")
-        conn.close()
-        return
+        # ── Step 2: Fetch all trades ─────────────────────────────────────────
+        cur.execute(
+            "SELECT timestamp, pnl FROM backtest_orders WHERE run_id=%s ORDER BY timestamp ASC",
+            (run_id,),
+        )
+        rows = cur.fetchall()
 
-    # Build equity curve from cumulative PnL
-    equity_curve = []
-    pnl_list = []
-    current_equity = initial_cap
+        if not rows:
+            logger.warning(f"⚠️ No trades found for {run_id}, cannot compute stats.")
+            return
 
-    equity_curve.append({
-        'timestamp': rows[0][0] - timedelta(seconds=1),
-        'equity': initial_cap
-    })
-    for ts, pnl_val in rows:
-        trade_pnl = float(pnl_val) if pnl_val is not None else 0.0
-        current_equity += trade_pnl
-        equity_curve.append({'timestamp': ts, 'equity': current_equity})
-        if pnl_val is not None and trade_pnl != 0.0:
-            pnl_list.append(trade_pnl)
+        def _to_dt(val) -> datetime:
+            """Normalize any timestamp type to a naive datetime."""
+            if isinstance(val, datetime):
+                return val.replace(tzinfo=None) if val.tzinfo else val
+            if isinstance(val, (int, float)):
+                return datetime.utcfromtimestamp(val / 1000.0)
+            try:
+                return datetime.fromisoformat(str(val))
+            except Exception:
+                return datetime.utcnow()
 
-    logger.info(f"📈 Stats compute for {run_id}: {len(equity_curve)} equity pts, {len(pnl_list)} PnL entries")
+        # ── Step 3: Build equity curve ────────────────────────────────────────
+        equity_curve = []
+        pnl_list     = []
+        current_eq   = initial_cap
+        first_ts     = _to_dt(rows[0][0])
+        last_ts      = _to_dt(rows[-1][0])
 
-    # Compute all statistics
-    stats = calculations.compute_all_statistics(
-        equity_curve=equity_curve,
-        pnl_list=pnl_list,
-        initial_capital=initial_cap,
-    )
+        equity_curve.append({'timestamp': first_ts - timedelta(seconds=1), 'equity': initial_cap})
+        for raw_ts, pnl_val in rows:
+            ts        = _to_dt(raw_ts)
+            trade_pnl = float(pnl_val) if pnl_val is not None else 0.0
+            current_eq += trade_pnl
+            equity_curve.append({'timestamp': ts, 'equity': current_eq})
+            if pnl_val is not None and trade_pnl != 0.0:
+                pnl_list.append(trade_pnl)
 
-    logger.info(f"📊 Computed: Sharpe={stats.get('sharpe_ratio')}, Sortino={stats.get('sortino_ratio')}, "
-                f"WinRate={stats.get('win_rate')}, PF={stats.get('profit_factor')}")
+        # ── Step 4: Compute trading days ──────────────────────────────────────
+        try:
+            trading_days = max(timesync.trading_days_between(first_ts.date(), last_ts.date()), 1)
+        except Exception:
+            calendar_days = max((last_ts - first_ts).days, 1)
+            trading_days  = max(int(calendar_days * 5 / 7), 1)
 
-    # Ensure table exists and upsert
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS backtest_results (
-            run_id UUID PRIMARY KEY,
-            sharpe_ratio FLOAT,
-            max_drawdown FLOAT,
-            win_rate FLOAT,
-            total_return FLOAT,
-            stats_json JSONB
-        );
-    """)
-    cur.execute("""
-        INSERT INTO backtest_results (run_id, sharpe_ratio, max_drawdown, win_rate, total_return, stats_json)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (run_id) DO UPDATE SET
-            sharpe_ratio = EXCLUDED.sharpe_ratio,
-            max_drawdown = EXCLUDED.max_drawdown,
-            win_rate = EXCLUDED.win_rate,
-            total_return = EXCLUDED.total_return,
-            stats_json = EXCLUDED.stats_json
-    """, (
-        run_id,
-        stats['sharpe_ratio'],
-        stats['max_drawdown'],
-        stats['win_rate'],
-        stats['total_return'],
-        json.dumps(stats)
-    ))
-    conn.commit()
-    conn.close()
-    logger.info(f"✅ Stats saved for {run_id}: Sharpe={stats['sharpe_ratio']}, Return={stats['total_return']}%")
+        logger.info(f"📈 Stats for {run_id}: {len(equity_curve)} equity pts, "
+                    f"{len(pnl_list)} PnL entries, {trading_days} trading days "
+                    f"({first_ts.date()} → {last_ts.date()})")
+
+        # ── Step 5: Compute all metrics ───────────────────────────────────────
+        stats = calculations.compute_all_statistics(
+            equity_curve=equity_curve,
+            pnl_list=pnl_list,
+            initial_capital=initial_cap,
+            trading_days=trading_days,
+        )
+        logger.info(f"📊 Results: Sharpe={stats.get('sharpe_ratio')}, "
+                    f"CAGR={stats.get('cagr')}%, MaxDD={stats.get('max_drawdown')}%, "
+                    f"WinRate={stats.get('win_rate')}, PF={stats.get('profit_factor')}")
+
+        # ── Step 6: Ensure table exists — use a SEPARATE connection for DDL ────
+        # (cannot toggle autocommit inside an open transaction)
+        ddl_conn = get_db_connection()
+        ddl_conn.autocommit = True
+        ddl_cur = ddl_conn.cursor()
+        ddl_cur.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                run_id UUID PRIMARY KEY,
+                sharpe_ratio FLOAT,
+                max_drawdown FLOAT,
+                win_rate FLOAT,
+                total_return FLOAT,
+                stats_json JSONB,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )
+        """)
+        ddl_conn.close()
+
+        # ── Step 7: Upsert computed stats ─────────────────────────────────────
+        # Convert numpy floats → native Python floats before psycopg2 binding
+        def _sanitize(v):
+            try:
+                import numpy as np
+                if isinstance(v, (np.floating, np.integer)):
+                    return float(v)
+                if isinstance(v, np.ndarray):
+                    return v.tolist()
+            except ImportError:
+                pass
+            return v
+
+        stats_clean = {k: _sanitize(v) for k, v in stats.items()}
+
+        cur.execute("""
+            INSERT INTO backtest_results (run_id, sharpe_ratio, max_drawdown, win_rate, total_return, stats_json)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (run_id) DO UPDATE SET
+                sharpe_ratio = EXCLUDED.sharpe_ratio,
+                max_drawdown = EXCLUDED.max_drawdown,
+                win_rate     = EXCLUDED.win_rate,
+                total_return = EXCLUDED.total_return,
+                stats_json   = EXCLUDED.stats_json
+        """, (
+            run_id,
+            float(stats_clean['sharpe_ratio']),
+            float(stats_clean['max_drawdown']),
+            float(stats_clean['win_rate']),
+            float(stats_clean['total_return']),
+            json.dumps(stats_clean)
+        ))
+        conn.commit()
+        logger.info(f"✅ Stats saved for {run_id}: Sharpe={stats_clean['sharpe_ratio']}, "
+                    f"CAGR={stats_clean['cagr']}%, MaxDD={stats_clean['max_drawdown']}%")
+
+    except Exception as e:
+        logger.error(f"❌ _compute_and_save_stats failed: {e}", exc_info=True)
+        try: conn.rollback()
+        except Exception: pass
+    finally:
+        try: conn.close()
+        except Exception: pass
 
 @app.post("/backtest")
 def start_backtest(request: BacktestRequest, background_tasks: BackgroundTasks):

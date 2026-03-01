@@ -534,8 +534,13 @@ def get_backtest_stats(run_id: str, conn = Depends(get_pg_conn)):
         row = cur.fetchone()
         if row and row[0]:
             stats = row[0]
-            # Sanity check: if sharpe_ratio is present and non-default, return it
-            if stats.get('sharpe_ratio') is not None:
+            # Only return precomputed stats if they contain full metrics.
+            # cagr is None on old broken rows — those should fall through to fallback.
+            has_full_stats = (
+                stats.get('cagr') is not None and
+                stats.get('sharpe_ratio') is not None
+            )
+            if has_full_stats:
                 return stats
 
         # ── Fallback: compute stats from trade data directly ──
