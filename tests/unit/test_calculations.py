@@ -1,64 +1,101 @@
 import pytest
-import numpy as np
+import sys
+import os
 
-# We'll mock the VWAP calculation logic that Feature Engine uses.
-# In a real environment, we would import the exact function. 
-# For demonstration in the CI pipeline, we define a pure calculation test.
+# Add the root directory to PYTHONPATH so we can import internal services
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
-def calculate_vwap(prices, volumes):
-    """Calculates Volume Weighted Average Price."""
-    if len(prices) != len(volumes) or len(prices) == 0:
-        return 0.0
+# Import the actual production logic we want to test
+from services.feature_engine.main import QuantProcessor
+
+class TestFeatureEngineMicrostructure:
     
-    cumulative_pv = np.sum(np.array(prices) * np.array(volumes))
-    cumulative_volume = np.sum(volumes)
-    
-    if cumulative_volume == 0:
-        return prices[-1] if len(prices) > 0 else 0.0
+    def test_vwap_and_obi_standard(self):
+        processor = QuantProcessor("TEST_SYM")
         
-    return cumulative_pv / cumulative_volume
-
-def calculate_obi(bid_qty, ask_qty):
-    """Calculates Order Book Imbalance (-1.0 to 1.0)."""
-    total = bid_qty + ask_qty
-    if total == 0:
-        return 0.0
-    return (bid_qty - ask_qty) / total
-
-
-class TestMicrostructureCalculations:
-    
-    def test_vwap_standard(self):
-        prices = [100.0, 101.0, 102.0]
-        volumes = [10, 20, 30]
+        # Simulate an Upstox Tick with Order Book Depth
+        enriched_1 = processor.process({
+            "symbol": "TEST_SYM",
+            "ltp": 100.0,
+            "v": 10,
+            "depth": {
+                "buy": [{"price": 99.0, "quantity": 8000}],
+                "sell": [{"price": 101.0, "quantity": 2000}]
+            }
+        })
         
-        # (100*10 + 101*20 + 102*30) / 60
-        # (1000 + 2020 + 3060) / 60 = 6080 / 60 = 101.333...
-        expected = 6080.0 / 60.0
-        assert pytest.approx(calculate_vwap(prices, volumes), 0.01) == expected
-
+        # VWAP: (100*10)/10 = 100.0
+        assert enriched_1["vwap"] == 100.0
+        
+        # OBI: (8000 - 2000) / 10000 = 0.6
+        assert enriched_1["obi"] == 0.6
+        
+        # Spread: 101.0 - 99.0 = 2.0
+        assert enriched_1["spread"] == 2.0
+        
+        # Tick 2
+        enriched_2 = processor.process({
+            "symbol": "TEST_SYM",
+            "ltp": 101.0,
+            "v": 20,
+            "depth": {
+                "buy": [{"price": 100.0, "quantity": 1000}],
+                "sell": [{"price": 102.0, "quantity": 9000}]
+            }
+        })
+        
+        # VWAP: (100*10 + 101*20) / 30 = (1000 + 2020)/30 = 3020/30 = 100.67
+        assert enriched_2["vwap"] == 100.67
+        # OBI: (1000 - 9000) / 10000 = -0.8
+        assert enriched_2["obi"] == -0.8
+        
     def test_vwap_zero_volume(self):
-        prices = [100.0, 101.0]
-        volumes = [0, 0]
-        assert calculate_vwap(prices, volumes) == 101.0
+        processor = QuantProcessor("TEST_SYM")
+        enriched = processor.process({
+            "symbol": "TEST_SYM",
+            "ltp": 105.0,
+            "v": 0,
+            "depth": {}
+        })
+        # If no volume, vwap defaults to ltp
+        assert enriched["vwap"] == 105.0
 
-    def test_vwap_empty(self):
-        assert calculate_vwap([], []) == 0.0
+    def test_missing_depth_data(self):
+        processor = QuantProcessor("TEST_SYM")
+        enriched = processor.process({
+            "symbol": "TEST_SYM",
+            "ltp": 105.0,
+            "v": 100
+            # no depth key
+        })
+        
+        assert enriched["obi"] == 0.0
+        assert enriched["spread"] == 0.0
+        assert enriched["aggressor"] == "NEUTRAL"
 
-    def test_obi_bullish(self):
-        # Heavy bid pressure
-        obi = calculate_obi(bid_qty=8000, ask_qty=2000)
-        assert obi == 0.6  # (8000-2000)/10000 = 0.6
-
-    def test_obi_bearish(self):
-        # Heavy ask pressure
-        obi = calculate_obi(bid_qty=1000, ask_qty=9000)
-        assert obi == -0.8 # (1000-9000)/10000 = -0.8
-
-    def test_obi_neutral(self):
-        obi = calculate_obi(bid_qty=5000, ask_qty=5000)
-        assert obi == 0.0
-
-    def test_obi_zero_liquidity(self):
-        obi = calculate_obi(bid_qty=0, ask_qty=0)
-        assert obi == 0.0
+    def test_aggressor_side_logic(self):
+        processor = QuantProcessor("TEST_SYM")
+        
+        # If LTP hits Best Ask, it was an aggressive BUY
+        enriched = processor.process({
+            "symbol": "TEST_SYM",
+            "ltp": 101.0,
+            "v": 100,
+            "depth": {
+                "buy": [{"price": 100.0, "quantity": 10}],
+                "sell": [{"price": 101.0, "quantity": 10}]
+            }
+        })
+        assert enriched["aggressor"] == "BUY"
+        
+        # If LTP hits Best Bid, it was an aggressive SELL
+        enriched2 = processor.process({
+            "symbol": "TEST_SYM",
+            "ltp": 99.0,
+            "v": 100,
+            "depth": {
+                "buy": [{"price": 99.0, "quantity": 10}],
+                "sell": [{"price": 100.0, "quantity": 10}]
+            }
+        })
+        assert enriched2["aggressor"] == "SELL"
