@@ -1,0 +1,201 @@
+services:
+  # LAYER 1: MESSAGE BUS (The "Heart" of the system)
+  kafka:
+    image: apache/kafka:latest
+    container_name: kafka_bus
+    ports:
+      - "9094:9094"
+    environment:
+      - KAFKA_NODE_ID=1
+      - KAFKA_PROCESS_ROLES=broker,controller
+      - KAFKA_LISTENERS=INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka_bus:9092,EXTERNAL://localhost:9094
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
+      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka_bus:9093
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_LOG_DIRS=/var/lib/kafka/data
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    restart: always
+
+  # LAYER 2: STATE STORE & CACHE
+  redis:
+    image: redis:7-alpine
+    container_name: redis_state
+    ports:
+      - "6379:6379"
+    restart: always
+
+  # LAYER 3: TIME-SERIES STORAGE (Tick & OHLC Data)
+  questdb:
+    image: questdb/questdb:latest
+    container_name: questdb_tsdb
+    ports:
+      - "9000:9000"
+      - "8812:8812"
+    volumes:
+      - questdb_data:/var/lib/questdb
+    environment:
+      - QDB_PG_USER=${QUESTDB_USER}
+      - QDB_PG_PASSWORD=${QUESTDB_PASSWORD}
+    restart: always
+
+  # LAYER 3: RELATIONAL STORAGE (Users & Strategies)
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres_metadata
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+  # LAYER 3: OBJECT STORAGE (Strategy Code & Backtest results)
+  minio:
+    image: minio/minio:latest
+    container_name: minio_s3
+    command: server /data --console-address ":9001"
+    ports:
+      - "9005:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    restart: always
+
+  # --- PRE-BUILT MICROSERVICES FROM GHCR ---
+  ingestor:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/ingestor:latest
+    container_name: upstox_ingestor
+    depends_on:
+      - kafka
+    environment:
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
+    restart: always
+
+  persistor:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/persistor:latest
+    container_name: market_persistor
+    depends_on:
+      - kafka
+      - questdb
+    environment:
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
+    restart: always
+
+  feature_engine:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/feature-engine:latest
+    container_name: feature_engine
+    depends_on:
+      - kafka
+    environment:
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
+    restart: always
+
+  strategy_runtime:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/strategy-runtime:latest
+    container_name: strategy_runtime
+    depends_on:
+      - kafka
+      - postgres
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONOPTIMIZE=1
+    env_file:
+      - .env
+    volumes:
+      - ./strategies:/app/strategies
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+
+  api_gateway:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/api-gateway:latest
+    container_name: api_gateway
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - questdb
+    ports:
+      - "8080:8000"
+    restart: always
+
+  backfiller:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/backfiller:latest
+    container_name: data_backfiller
+    depends_on:
+      - questdb
+      - postgres
+    env_file:
+      - .env
+    ports:
+      - "8001:8001"
+    restart: always
+
+  edge_detector:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/edge-detector:latest
+    container_name: edge_detector
+    depends_on:
+      - questdb
+    env_file:
+      - .env
+    ports:
+      - "8002:8002"
+    restart: always
+
+  scanner:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/scanner:latest
+    container_name: market_scanner
+    depends_on:
+      - kafka
+      - postgres
+    env_file:
+      - .env
+    restart: always
+
+  doctor:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/system-doctor:latest
+    container_name: system_doctor
+    depends_on:
+      - postgres
+      - questdb
+      - kafka
+      - api_gateway
+
+  frontend:
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/frontend:latest
+    container_name: quant_frontend
+    ports:
+      - "3001:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+      - API_INTERNAL_URL=http://api_gateway:8000
+    depends_on:
+      - api_gateway
+    restart: always
+
+volumes:
+  questdb_data:
+  postgres_data:
+  minio_data:
+  kafka_data:

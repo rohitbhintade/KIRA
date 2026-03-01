@@ -1,0 +1,85 @@
+name: Build and Publish KIRA to GHCR
+
+on:
+  push:
+    branches: [ "main" ]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push-images:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 'frontend'
+            path: 'frontend'
+          - name: 'api-gateway'
+            path: 'services/api_gateway'
+          - name: 'strategy-runtime'
+            path: 'services/strategy_runtime'
+          - name: 'edge-detector'
+            path: 'services/edge_detector'
+          - name: 'scanner'
+            path: 'services/scanner'
+          - name: 'feature-engine'
+            path: 'services/feature_engine'
+          - name: 'backfiller'
+            path: 'services/backfiller'
+          - name: 'ingestor'
+            path: 'services/ingestion'
+          - name: 'persistor'
+            path: 'services/persistor'
+          - name: 'system-doctor'
+            path: 'services/system_doctor'
+          - name: 'optimizer'
+            path: 'services/optimizer'
+          - name: 'historical-replayer'
+            path: 'services/historical_replayer'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Convert repository name to lowercase
+        id: repo_name
+        run: echo "repository=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.repo_name.outputs.repository }}/${{ matrix.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=sha,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.path }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

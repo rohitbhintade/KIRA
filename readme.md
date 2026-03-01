@@ -93,13 +93,25 @@ flowchart TB
 - Docker Desktop (minimum **6 GB RAM** allocated)
 - Upstox API Credentials (API Key & Secret)
 
-### Installation
+### One-Click Production Install (No Build Required)
+Run the following in your terminal to download the production manifest, configure your API keys, and start the pre-built GHCR images:
 
+```bash
+mkdir kira-platform && cd kira-platform
+curl -O https://raw.githubusercontent.com/suprathps/quant-platform/main/docker-compose.prod.yml
+curl -o .env https://raw.githubusercontent.com/suprathps/quant-platform/main/services/ingestion/.env.example
+# Edit .env with your Upstox API keys
+docker compose -f docker-compose.prod.yml up -d
+```
+
+### Developer Installation (Build from Source)
 Clone repository and prepare environment:
-- `git clone https://github.com/yourusername/quant-platform.git`
-- `cd quant-platform`
-- `cd services/ingestion`
-- `cp .env.example .env`
+```bash
+git clone https://github.com/suprathps/quant-platform.git
+cd quant-platform
+cp services/ingestion/.env.example .env
+docker compose -f infra/docker-compose.yml up -d --build
+```
 
 ### Configuration (`services/ingestion/.env`)
 
