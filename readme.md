@@ -94,14 +94,22 @@ flowchart TB
 - Upstox API Credentials (API Key & Secret)
 
 ### One-Click Production Install (No Build Required)
-Run the following in your terminal to download the production manifest, configure your API keys, and start the pre-built GHCR images:
+Run the following in your terminal to download the production manifest, configure your API keys, and start the pre-built GHCR images.
+
+By default, this pulls the latest **stable** release.
 
 ```bash
 mkdir kira-platform && cd kira-platform
-curl -O https://raw.githubusercontent.com/suprathps/quant-platform/main/docker-compose.prod.yml
-curl -o .env https://raw.githubusercontent.com/suprathps/quant-platform/main/services/ingestion/.env.example
+curl -O https://raw.githubusercontent.com/suprathps/quant-platform/master/docker-compose.prod.yml
+curl -o .env https://raw.githubusercontent.com/suprathps/quant-platform/master/services/ingestion/.env.example
 # Edit .env with your Upstox API keys
 docker compose -f docker-compose.prod.yml up -d
+```
+
+### Try the Beta Version
+If you want to run the cutting-edge bleeding code from the `master` branch:
+```bash
+APP_VERSION=beta docker compose -f docker-compose.prod.yml up -d
 ```
 
 ### Developer Installation (Build from Source)

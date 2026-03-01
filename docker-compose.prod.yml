@@ -75,7 +75,7 @@ services:
 
   # --- PRE-BUILT MICROSERVICES FROM GHCR ---
   ingestor:
-    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/ingestor:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/ingestor:${APP_VERSION:-stable}
     container_name: upstox_ingestor
     depends_on:
       - kafka
@@ -86,7 +86,7 @@ services:
     restart: always
 
   persistor:
-    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/persistor:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/persistor:${APP_VERSION:-stable}
     container_name: market_persistor
     depends_on:
       - kafka
@@ -98,7 +98,7 @@ services:
     restart: always
 
   feature_engine:
-    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/feature-engine:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/feature-engine:${APP_VERSION:-stable}
     container_name: feature_engine
     depends_on:
       - kafka
@@ -109,7 +109,7 @@ services:
     restart: always
 
   strategy_runtime:
-    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/strategy-runtime:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/strategy-runtime:${APP_VERSION:-stable}
     container_name: strategy_runtime
     depends_on:
       - kafka
@@ -129,7 +129,7 @@ services:
           memory: 4G
 
   api_gateway:
-    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/api-gateway:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/api-gateway:${APP_VERSION:-stable}
     container_name: api_gateway
     env_file:
       - .env
@@ -141,7 +141,7 @@ services:
     restart: always
 
   backfiller:
-    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/backfiller:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/backfiller:${APP_VERSION:-stable}
     container_name: data_backfiller
     depends_on:
       - questdb
@@ -153,7 +153,7 @@ services:
     restart: always
 
   edge_detector:
-    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/edge-detector:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/edge-detector:${APP_VERSION:-stable}
     container_name: edge_detector
     depends_on:
       - questdb
@@ -164,7 +164,7 @@ services:
     restart: always
 
   scanner:
-    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/scanner:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/scanner:${APP_VERSION:-stable}
     container_name: market_scanner
     depends_on:
       - kafka
@@ -174,7 +174,7 @@ services:
     restart: always
 
   doctor:
-    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/system-doctor:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/system-doctor:${APP_VERSION:-stable}
     container_name: system_doctor
     depends_on:
       - postgres
@@ -183,7 +183,7 @@ services:
       - api_gateway
 
   frontend:
-    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/frontend:latest
+    image: ghcr.io/${GITHUB_REPOSITORY_LOWER}/frontend:${APP_VERSION:-stable}
     container_name: quant_frontend
     ports:
       - "3001:3000"
