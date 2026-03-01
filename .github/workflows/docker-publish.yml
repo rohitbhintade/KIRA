@@ -48,6 +48,7 @@ jobs:
 
       - name: Start Ephemeral Kafka for Integration Tests
         run: |
+          touch .env  # Create blank .env so docker-compose doesn't crash from missing file
           docker compose -f infra/docker-compose.yml up -d kafka
           echo "Waiting for Kafka Kraft controller election..."
           sleep 15
