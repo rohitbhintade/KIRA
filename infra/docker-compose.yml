@@ -139,7 +139,7 @@ services:
     container_name: api_gateway
     volumes:
       - ../services/api_gateway:/app
-      - ../.env:/app/.env
+      - ../.env:/app/.env:ro
     depends_on:
       - postgres
       - questdb

@@ -1,28 +1,78 @@
-# Algorithm Design Guide
+# KIRA: Kinetic Intelligence for Research & Alpha
 
-This guide provides a comprehensive reference for developing trading algorithms on the Quant Platform. It follows a structure similar to QuantConnect's Lean Engine, allowing for event-driven strategy development.
+Welcome to the **KIRA** Documentation. KIRA is a high-performance quantitative trading and research platform designed for microsecond execution, temporal pattern recognition, and robust backtesting.
 
----
-
-## 1. Essential Imports
-Every algorithm file must start with valid imports. The platform pre-loads common libraries, but you should explicitly import what you need.
-
-```python
-from AlgorithmImports import *
-# This includes: QCAlgorithm, Resolution, OrderType, etc.
-```
-
-**Note:** Do not import `pandas` or `numpy` for data manipulation unless you are doing custom analysis outside the platform's core data structures. The `data` object provided in `OnData` is optimized for performance.
+This guide outlines the core architecture, the 6-module Deep Edge Scanner, and the Strategy execution APIs.
 
 ---
 
-## 2. The `QCAlgorithm` Class
-Your strategy must be a class that inherits from `QCAlgorithm`. It requires two primary methods:
-- **`Initialize()`**: Setup (cash, dates, data subscriptions).
-- **`OnData(data)`**: The trading loop triggered by market updates.
+## 1. System Architecture
+
+KIRA operates on a decoupled, asynchronous microservices architecture connected via a **Kafka Event Backbone**. 
+
+### Data Layer
+- **QuestDB (Time-Series)**: Ingests and queries millions of ticks/OHLCV data points with Sub-SQL latency.
+- **PostgreSQL (Relational)**: Stores metadata, user profiles, strategy definitions, and order histories.
+- **Redis (State & Caching)**: Maintains real-time portfolio states, active positions, and order book snapshots.
+
+### Execution Layer
+- **Live Strategy Engine**: Executes Python algorithms in real-time. Supports both **MIS (Intraday)** and **CNC (Delivery)** modes.
+- **Backtest Runner**: A vectorized, event-driven historical simulation engine that supports custom indicators and slippage models.
+- **API Gateway**: A FastAPI interface bridging the Next.js frontend to the backend execution and scanner modules.
+
+---
+
+## 2. KIRA Deep Edge Scanner
+
+The **Deep Edge Scanner** is the flagship research tool of KIRA. It sweeps historical data using Vectorized Pandas and SciPy to find highly probable micro-patterns and inefficiencies across temporal horizons.
+
+The scanner analyzes a given equity across 6 interconnected modules:
+
+1. **Asset Personality Module**: 
+   Defines the fundamental behavior of the asset (e.g., *Strong Trend Follower*, *Mean Reverting*). Analyzes Win Rate, Sortino ratio, and directional bias.
+
+2. **Market Regime Engine**:
+   Classifies the current state of the instrument (e.g., *Strong Uptrend*, *Consolidation*, *High Volatility Bear*). Calculates localized regime returns and stability scores.
+
+3. **Temporal Inefficiency Detector**:
+   Discovers "time-of-day" or "day-of-week" edges. Generates actionable insights, such as *Buy at 10:15 AM* or *Avoid trading on Fridays*.
+
+4. **Multi-Horizon Pattern Recognition**:
+   Uses SciPy's `find_peaks` and DTW (Dynamic Time Warping) to identify technical formations (Head & Shoulders, Double Bottoms, Wedges).
+
+5. **Institutional Support/Resistance**:
+   Maps liquidity zones using volume profiling and price clustering to determine high-probability bounce or breakout levels.
+
+6. **Volatility & Risk Metrics (ATR/MaxDD)**:
+   Measures absolute risk through Average True Range (ATR), Maximum Drawdown, and Sharpe Ratios, guiding position sizing logic.
+
+---
+
+## 3. Live Execution Terminal
+
+The Live Terminal allows you to deploy backtested strategies into live paper-trading (and eventually real brokerage execution).
+
+### Trading Modes
+When deploying a strategy, you must select an execution mode:
+- **Intraday (MIS)**: The engine automatically squares off positions at 3:20 PM IST. Intraday margin rules and flat-rate brokerage apply.
+- **Delivery (CNC)**: The engine holds positions overnight. Delivery STT and standard equity brokerage apply.
+
+### Live Telemetry
+The Live Terminal connects to the `Strategy Runtime` WebSocket/HTTP long-polling to provide:
+- Real-time Equity curves.
+- Order Book updates and simulated fill states.
+- Terminal logs containing system heartbeats and trigger events.
+
+---
+
+## 4. Developing Strategies 
+
+Strategies in KIRA are written in Python and inherit from `QCAlgorithm` (modeled after QuantConnect's Lean Engine).
 
 ### Basic Template
 ```python
+from AlgorithmImports import *
+
 class MyStrategy(QCAlgorithm):
     def Initialize(self):
         self.SetCash(100000)
@@ -36,57 +86,8 @@ class MyStrategy(QCAlgorithm):
                 self.SetHoldings("NSE_EQ|RELIANCE", 1.0)
 ```
 
----
-
-## 3. Data Subscription & Access
-You must subscribe to data in `Initialize` to receive it in `OnData`.
-
-### Subscribe
-```python
-# Equity (Stocks)
-self.AddEquity("NSE_EQ|TCS", Resolution.Minute)
-
-# Indices
-self.AddEquity("NSE_INDEX|Nifty 50", Resolution.Minute)
-```
-
-### Accessing Data
-The `data` object in `OnData` is a **Slice**. It works like a dictionary keyed by the symbol string.
-```python
-bar = data["NSE_EQ|TCS"]
-print(f"Time: {bar.Time}, Close: {bar.Close}, Volume: {bar.Volume}")
-```
-
-**Check for Data Existence:** Always check if the key exists before accessing to avoid errors during market holidays or gaps.
-```python
-if "NSE_EQ|TCS" in data:
-    # safe to access
-```
-
----
-
-## 4. Trading API
-
-### `SetHoldings(symbol, percentage)`
-Calculates the number of shares based on current price and portfolio equity.
-- `1.0`: 100% Long
-- `-0.5`: 50% Short
-- `0.0`: Liquidate (Close position)
-
-### `Liquidate(symbol)`
-Immediately closes all open positions for the symbol.
-
-### `MarketOrder(symbol, quantity)` (Advanced)
-If you need precise quantity control instead of percentages.
-```python
-self.MarketOrder("NSE_EQ|INFY", 100) # Buy 100
-self.MarketOrder("NSE_EQ|INFY", -50) # Sell 50
-```
-
----
-
-## 5. Technical Indicators
-The platform supports creating indicators in `Initialize` which automatically update with price data.
+### Technical Indicators
+Platform-native indicators are created in `Initialize` and auto-update:
 
 ```python
 def Initialize(self):
@@ -94,68 +95,19 @@ def Initialize(self):
     self.sma_fast = self.SMA("NSE_EQ|RELIANCE", 50, Resolution.Minute)
 
 def OnData(self, data):
-    # Always check if indicators are ready (have enough data)
-    if not self.rsi.IsReady or not self.sma_fast.IsReady:
-        return
-        
+    if not self.rsi.IsReady: return
+    
     if self.rsi.Current.Value > 70:
         self.Liquidate("NSE_EQ|RELIANCE")
 ```
 
 ---
 
-## 6. Logging & Debugging
-- **`self.Debug(message)`**: Sends a high-priority message to the console. Good for critical events.
-- **`self.Log(message)`**: Standard logging for info/tracking.
+## 5. System Health & Telemetry
 
-```python
-self.Debug(f"Buying Reliance at {price}")
-```
+The platform includes a built-in `System Doctor` that continuously monitors:
+- **Kafka Bus Latency**: Ensures event streams are flowing without lag.
+- **Database Status**: Heartbeats for Postgres, Redis, and QuestDB.
+- **Container Memory/CPU**: Telemetry on the isolated Docker bridge network.
 
----
-
-## 7. Dos and Don'ts
-
-| Category | Do | Don't |
-|----------|----|-------|
-| **Logic** | Use `self.Time` for current algorithm time. | Use `datetime.now()` (it gives system time, not backtest time). |
-| **Performance** | Pre-calculate heavy math in `Initialize` if possible. | Run complex loops or I/O inside `OnData`. |
-| **Safety** | Check `if self.Portfolio.Invested`. | Assume you have cash; the system will reject orders if fondless. |
-| **State** | Use instance variables (`self.var`) to store state. | Use global variables. |
-
----
-
-## 8. Complete Example: Moving Average Crossover
-
-```python
-from AlgorithmImports import *
-
-class MovingAverageCross(QCAlgorithm):
-    def Initialize(self):
-        self.SetCash(100000)
-        self.symbol = "NSE_EQ|SBIN"
-        self.AddEquity(self.symbol, Resolution.Minute)
-        
-        # Define Indicators
-        self.fast = self.SMA(self.symbol, 20, Resolution.Minute)
-        self.slow = self.SMA(self.symbol, 50, Resolution.Minute)
-        
-        # Warmup (optional, ensures indicators are ready immediately)
-        self.SetWarmUp(50)
-
-    def OnData(self, data):
-        # Wait for indicators
-        if not self.fast.IsReady or not self.slow.IsReady:
-            return
-
-        # Strategy Logic
-        if self.fast.Current.Value > self.slow.Current.Value:
-            if not self.Portfolio[self.symbol].IsLong:
-                self.SetHoldings(self.symbol, 1.0)
-                self.Debug(f"Golden Cross! Buying {self.symbol}")
-                
-        elif self.fast.Current.Value < self.slow.Current.Value:
-            if self.Portfolio[self.symbol].IsLong:
-                self.Liquidate(self.symbol)
-                self.Debug(f"Death Cross! Selling {self.symbol}")
-```
+If any component goes down, the Live Execution Engine immediately halts active strategies to prevent unmonitored risk.

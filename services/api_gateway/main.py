@@ -685,6 +685,32 @@ def get_backtest_history(conn = Depends(get_pg_conn)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/api/v1/backtest/history")
+def clear_backtest_history(conn = Depends(get_pg_conn)):
+    """Clear ALL backtest data"""
+    try:
+        cur = conn.cursor()
+        
+        cur.execute("DELETE FROM backtest_positions;")
+        cur.execute("DELETE FROM backtest_orders;")
+        cur.execute("DELETE FROM backtest_universe;")
+        cur.execute("DELETE FROM backtest_portfolios;")
+        cur.execute("DELETE FROM backtest_results;") # Also delete the parent runs
+        total = cur.rowcount
+        
+        # Flush Redis cache where edge scanner and backtest analysis is stored
+        try:
+            redis_client.flushdb()
+        except:
+            pass
+        
+        conn.commit()
+        cur.close()
+        return {"status": "cleared", "message": "All backtest history deleted"}
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/api/v1/backtest/{run_id}")
 def delete_backtest(run_id: str, conn = Depends(get_pg_conn)):
     """Delete a specific backtest run and all associated data"""
@@ -705,29 +731,17 @@ def delete_backtest(run_id: str, conn = Depends(get_pg_conn)):
         """, (run_id,))
 
         cur.execute("DELETE FROM backtest_portfolios WHERE run_id = %s;", (run_id,))
+        cur.execute("DELETE FROM backtest_results WHERE run_id = %s;", (run_id,))
+        
+        # Also clear this specific run analysis from redis
+        try:
+            redis_client.delete(f"backtest_analysis:{run_id}")
+        except:
+            pass
         
         conn.commit()
         cur.close()
         return {"status": "deleted", "run_id": run_id, "orders_deleted": orders_deleted}
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/api/v1/backtest/history")
-def clear_backtest_history(conn = Depends(get_pg_conn)):
-    """Clear ALL backtest data"""
-    try:
-        cur = conn.cursor()
-        
-        cur.execute("DELETE FROM backtest_positions;")
-        cur.execute("DELETE FROM backtest_orders;")
-        cur.execute("DELETE FROM backtest_universe;")
-        cur.execute("DELETE FROM backtest_portfolios;")
-        total = cur.rowcount
-        
-        conn.commit()
-        cur.close()
-        return {"status": "cleared", "message": "All backtest history deleted"}
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { ArrowLeft, ExternalLink, BookOpen, Terminal, Code2, Server } from 'lucide-react';
+import { ArrowLeft, ExternalLink, BookOpen, Terminal, Server } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import Link from 'next/link';
 import { Badge } from "@/components/ui/badge";
@@ -36,8 +36,8 @@ export default function DocsPage() {
                     </Link>
                     <div className="flex items-center gap-2 border-l border-border pl-4">
                         <BookOpen className="h-5 w-5 text-primary" />
-                        <h1 className="text-xl font-bold tracking-tight">Antigravity Docs</h1>
-                        <Badge variant="secondary" className="ml-2">v1.2.0</Badge>
+                        <h1 className="text-xl font-bold tracking-tight">KIRA Docs</h1>
+                        <Badge variant="secondary" className="ml-2">v2.0.0</Badge>
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -60,7 +60,7 @@ export default function DocsPage() {
                         onClick={() => setActiveTab('guide')}
                         className={`flex items-center gap-3 w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${activeTab === 'guide' ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-muted text-muted-foreground hover:text-foreground'}`}
                     >
-                        <Code2 className="h-4 w-4" /> Algorithm Guide
+                        <BookOpen className="h-4 w-4" /> Architecture & Guides
                     </button>
 
                     <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 mt-6 px-2">API References</div>
