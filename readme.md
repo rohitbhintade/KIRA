@@ -1,14 +1,33 @@
-# Production-Grade Quant Trading Platform (Indian Markets)
+# KIRA - Quantitative Trading Platform
 
-A **high-frequency, event-driven algorithmic trading platform** designed for **NSE/BSE (India)** using the **Upstox V3 API**.
+A high-frequency, event-driven algorithmic trading platform designed for the Indian equity markets using the Upstox API.
 
-Built with a **microservices architecture**, it handles real-time ingestion, market microstructure analysis (VWAP, Order Book Imbalance), and automated execution — all while staying within **Upstox free-tier API limits**.
+Built with a sophisticated microservices architecture, KIRA handles real-time data ingestion, market microstructure analysis (such as Volume Weighted Average Price and Order Book Imbalance), dynamic support and resistance detection, and automated execution. It is designed to be highly scalable while remaining compliant with standard brokerage API rate limits.
 
 ---
 
-## Architecture
+## Quick Start
 
-The system follows a **reactive, event-driven design**.
+You can deploy the entire production-ready platform with a single command. 
+
+Ensure you have Docker Desktop installed with at least 8 GB of RAM allocated, and your Upstox Developer API Credentials ready.
+
+```bash
+mkdir kira && cd kira
+curl -O https://raw.githubusercontent.com/suprathps/kira/master/docker-compose.prod.yml
+curl -o .env https://raw.githubusercontent.com/suprathps/kira/master/services/ingestion/.env.example
+
+# Open the .env file in your editor and add your Upstox API keys
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Once the containers have initialized, you can access the trading dashboard by navigating to `http://localhost:3000` in your web browser.
+
+---
+
+## Architecture Overview
+
+The system strictly adheres to a reactive, event-driven design built around an Apache Kafka message bus. This allows individual components to scale independently and prevents network bottlenecks during highly volatile market sessions.
 
 ```mermaid
 flowchart TB
@@ -17,291 +36,146 @@ flowchart TB
     end
 
     subgraph Streaming["Event Streaming Layer"]
-        Kafka(("Apache Kafka<br/>Message Bus"))
+        Kafka(("Apache Kafka\nMessage Bus"))
     end
 
     subgraph DataLayer["Data & Persistence Layer"]
-        QDB[("QuestDB<br/>Time-Series Data")]
-        PG[("PostgreSQL<br/>Metadata, Orders")]
-        RS[("Redis<br/>State & Caching")]
-        S3[("Minio S3<br/>Models & Assets")]
+        QDB[("QuestDB\nTime-Series Data")]
+        PG[("PostgreSQL\nMetadata & Orders")]
+        RS[("Redis\nState & Caching")]
+        S3[("Minio S3\nModels & Assets")]
     end
 
     subgraph DataIngestion["Ingestion & Processing"]
-        Ingestor["Sensor - Ingestor"]
-        Scanner["Scout - Scanner"]
-        FeatureEngine["Brain - Feature Engine"]
-        Backfiller["Data Backfiller"]
-        Persistor["Market Persistor"]
+        Ingestor["Ingestor\nWebSocket Feed"]
+        Scanner["Scanner\nMomentum Detection"]
+        FeatureEngine["Feature Engine\nMicrostructure Metrics"]
+        Backfiller["Data Backfiller\nHistorical Downloader"]
+        Persistor["Market Persistor\nData Storage"]
+        EdgeDetector["Edge Detector\nSupport & Resistance"]
     end
 
     subgraph AI["Strategy & Execution"]
-        ESTI["ESTI Hedge Fund<br/>PyTorch RL / Online Learning"]
-        Runtime["Hands - Strategy Runtime<br/>Live & Backtest Engine"]
+        Optimizer["Parameter Optimizer\nHyperparameter Tuning"]
+        Runtime["Strategy Runtime\nLive Execution Engine"]
+        Replayer["Historical Replayer\nBacktest Simulation"]
     end
 
     subgraph Interface["User Interface"]
-        API["Window - API Gateway<br/>FastAPI"]
-        Frontend["Quant Frontend<br/>Next.js"]
+        API["API Gateway\nFastAPI REST"]
+        Frontend["Quant Frontend\nNext.js Dashboard"]
     end
 
     %% Connections
-    Upstox <-->|WebSockets and REST| Ingestor
+    Upstox <-->|WebSockets & REST| Ingestor
     Upstox -->|REST| Scanner
     Runtime -->|Execute Orders| Upstox
 
     Ingestor -->|Raw Market Data| Kafka
     Scanner -->|Momentum Candidates| Kafka
-    FeatureEngine -->|Enriched Data VWAP and OBI| Kafka
+    FeatureEngine -->|VWAP and OBI| Kafka
+    EdgeDetector -->|Price Levels| Kafka
+    
     Kafka -.->|Stream| FeatureEngine
+    Kafka -.->|Stream| EdgeDetector
     Kafka -.->|Stream| Persistor
     Kafka -.->|Market Events| Runtime
     
     Persistor -->|Save Ticks| QDB
     Backfiller -->|Historical OHLC| QDB
+    Replayer -->|Playback Data| Kafka
     
-    ESTI -->|Trained Models| S3
-    ESTI -->|Strategy Definitions| PG
+    Optimizer -->|Optimal Parameters| PG
     Runtime -->|Load Models| S3
     Runtime -->|Portfolios and Trades| PG
     Runtime -->|Historical Data| QDB
     
-    API <-->|Manage Strategies and Triggers| Runtime
-    API -->|Read and Write| PG
+    API <-->|Manage Strategies| Runtime
+    API -->|Read & Write| PG
     API -->|Read| QDB
     API -->|Cache| RS
     
     Frontend <-->|REST API| API
 ```
 
-| Layer | Component | Technology | Purpose |
-|------|----------|-----------|---------|
-| 1 | Scout | Market Scanner (Python) | Scans 100+ stocks every 5 mins to find high-momentum breakout candidates |
-| 2 | Sensor | Ingestor (Upstox V3 / Protobuf) | WebSocket ingestion & dynamic subscriptions |
-| 3 | Bus | Message Bus (Apache Kafka) | Low-latency streaming of ticks, greeks, and signals |
-| 4 | Storage | Time-Series DB (QuestDB) | Stores ticks, OHLC, and option greeks |
-| 4 | Storage | Relational DB (PostgreSQL) | Instrument master, user metadata, trade logs |
-| 5 | Brain | Feature Engine (Pandas / NumPy) | VWAP, OBI, Spread, Aggressor detection |
-| 6 | Hands | Strategy Runtime (Python) | Executes trades (Paper / Live) |
-| 7 | Window | API Gateway (FastAPI) | REST API for dashboards and clients |
+---
+
+## Core Microservices
+
+The platform is divided into specialized, isolated microservices that communicate predominantly over Kafka to ensure deep decoupling and minimum latency.
+
+### 1. Ingestor
+Connects directly to the Upstox V3 WebSocket feed. It subscribes to a dynamic list of instruments, including the top 100 highly liquid NSE equities globally recognized in the NIFTY index, and publishes raw tick data (Last Traded Price, Volume, Open Interest, and Level 2 Market Depth) directly to Kafka.
+
+### 2. Market Scanner
+Operates on a scheduled interval to scan the broader market for high-momentum breakout candidates. It calculates momentum scores based on price action and trading volume, alerting the Ingestor to dynamically subscribe to new, highly-active symbols.
+
+### 3. Feature Engine
+Consumes the raw market ticks from Kafka and calculates enriched technical indicators in real-time. This includes Volume-Weighted Average Price, Order Book Imbalance, and short-term Simple Moving Averages. The enriched data stream is then republished back to the event bus for downstream execution elements.
+
+### 4. Edge Detector
+A real-time analytics module that listens to the market feed and mathematically computes dynamic local support and resistance levels. It constantly maps out the structural boundaries of the market, helping algorithmic strategies identify optimal entry and exit edges based on recent price consolidation zones.
+
+### 5. Market Persistor
+Listens to all enriched market data passing through Kafka and heavily batches it for insertion into QuestDB, an ultra-fast time-series database. This ensures every single tick, quote, and calculated metric is safely and efficiently stored for long-term historical analysis.
+
+### 6. Strategy Runtime (Algorithm Engine)
+The core execution environment. This service loads trading strategies built using the native Quant SDK. It handles everything from evaluating live market signals and managing the portfolio, to strictly sizing positions and tracking daily risk compliance. It interfaces securely with the Upstox API to submit live market orders, or routes them through an internal virtual paper exchange simulator.
+
+### 7. Parameter Optimizer
+A background service responsible for continuous hyperparameter tuning. It performs grid searches across historical datasets to find the most mathematically optimal parameters (such as trailing stop-loss percentages or momentum thresholds) for active strategies, adjusting them as market regimes change.
+
+### 8. Historical Replayer & Data Backfiller
+The Data Backfiller strictly downloads historical OHLCV data from the Upstox API while elegantly managing rigorous rate limits. The Historical Replayer is then able to stream this stored historical data back into the main Kafka bus at expedited speeds, mimicking a live market and allowing for extremely accurate, event-driven time-series backtesting.
+
+### 9. API Gateway
+A robust FastAPI REST interface that acts as the secure bridge between the internal cluster and external applications. It handles routing and caching (via Redis) for real-time portfolio metrics, historical chart data, strategy management, and live performer leaderboards.
+
+### 10. Quant Frontend
+A sleek Next.js resilient dashboard providing a graphical interface for the platform. It visualizes scanner results, active portfolio positions, live equity curves, and allows users to manually backtest custom strategies or transition them cleanly into live execution.
+
+### 11. System Doctor
+A comprehensive diagnostics utility that continuously monitors the health of the Kafka broker, the databases, and broker API connectivity, ensuring the platform remains completely stable throughout the volatile trading day.
 
 ---
 
-## ⚡ Quick Start
+## Database Infrastructure
 
-### Prerequisites
-- Docker Desktop (minimum **6 GB RAM** allocated)
-- Upstox API Credentials (API Key & Secret)
+The persistence layer is intentionally fragmented based on distinct optimization requirements:
 
-### One-Click Production Install (No Build Required)
-Run the following in your terminal to download the production manifest, configure your API keys, and start the pre-built GHCR images.
-
-By default, this pulls the latest **stable** release.
-
-```bash
-mkdir kira-platform && cd kira-platform
-curl -O https://raw.githubusercontent.com/suprathps/kira/master/docker-compose.prod.yml
-curl -o .env https://raw.githubusercontent.com/suprathps/kira/master/services/ingestion/.env.example
-# Edit .env with your Upstox API keys
-docker compose -f docker-compose.prod.yml up -d
-```
-
-### Try the Beta Version
-If you want to run the cutting-edge bleeding code from the `master` branch:
-```bash
-APP_VERSION=beta docker compose -f docker-compose.prod.yml up -d
-```
-
-### Developer Installation (Build from Source)
-Clone repository and prepare environment:
-```bash
-git clone https://github.com/suprathps/kira.git
-cd kira
-cp services/ingestion/.env.example .env
-docker compose -f infra/docker-compose.yml up -d --build
-```
-
-### Configuration (`services/ingestion/.env`)
-
-UPSTOX_API_KEY=your_api_key  
-UPSTOX_API_SECRET=your_api_secret  
-UPSTOX_REDIRECT_URI=http://localhost:8501  
-UPSTOX_ACCESS_TOKEN= *(leave blank initially)*  
-
-KAFKA_BOOTSTRAP_SERVERS=kafka_bus:9092  
-POSTGRES_HOST=postgres_metadata  
-QUESTDB_HOST=questdb_tsdb  
+- **QuestDB**: Optimized for millions of rows of high-frequency time-series data. Stores all raw ticks, historical OHLC candles, option greeks, and microstructure metrics.
+- **PostgreSQL**: Acts as the relational state store. Manages user authentication, instrument metadata mappings, strategy definitions, portfolio balances, active positions, and the comprehensive audit trail of all executed orders.
+- **Redis**: Provides fast, ephemeral caching for the API Gateway and connection limit management.
+- **Minio S3**: Object storage designated to save trained machine learning models, persistent strategy state files, and routine system backups.
 
 ---
 
-##  Daily Routine (Runbook)
+## Writing a Strategy
 
- **Upstox access tokens expire daily at 3:30 AM IST**  
-Follow this routine every trading day before market open (~08:45 AM).
-
-### Step 1: Start Infrastructure
-- `cd infra`
-- `docker compose up -d`
-
-### Step 2: Authenticate (Generate Daily Token)
-- `docker compose run --rm ingestor python auth_helper.py`
-- Login via browser, copy auth code, paste into terminal
-- Update `UPSTOX_ACCESS_TOKEN` in `.env`
-
-### Step 3: Sync Instrument Master (IPOs / Expiries)
-Downloads ~22,000 instruments into PostgreSQL.
-- `docker exec -it api_gateway python sync_instruments.py`
-
-### Step 4: Launch Application Services
-- `docker compose restart ingestor scanner feature_engine`
-
-### Step 5: Verify System Health
-- `docker compose run --rm doctor`
-
----
-
-##  Kafka Topics & Data Streams
-
-### Raw Market Data (`market.equity.ticks`)
-Fields: symbol, ltp, volume, open interest, previous close, timestamp
-
-### Option Greeks (`market.option.greeks`)
-Fields: iv, delta, gamma, theta, vega
-
-### Enriched Microstructure (`market.enriched.ticks`)
-Fields: vwap, order book imbalance, spread, aggressor side
-
-### Scanner Suggestions (`scanner.suggestions`)
-List of high-momentum equities detected pre-breakout
-
----
-
----
-
-##  Quant SDK & Strategy Engine
-
-The platform now features a **QuantConnect-inspired SDK** (`quant_sdk`) for writing and executing algorithms. Strategies are decoupled from the core runtime, allowing for flexible backtesting and live execution.
-
-### 1. Writing a Strategy
-Inherit from `QCAlgorithm` and implement `Initialize` and `OnData`.
+The platform provides a flexible SDK for implementing quantitative logic inside the Strategy Runtime. 
 
 ```python
 from quant_sdk import QCAlgorithm, Resolution
 
-class MyStrategy(QCAlgorithm):
+class MomentumStrategy(QCAlgorithm):
     def Initialize(self):
-        self.SetCash(100000)
-        self.SetStartDate(2024, 1, 1)
-        self.SetEndDate(2024, 12, 31)
-        
-        # Subscribe to Data
+        self.SetCash(20000)
         self.symbol = "NSE_EQ|INE002A01018"
         self.AddEquity(self.symbol, Resolution.Minute)
-        
-        # Define Indicators
         self.sma = self.SMA(self.symbol, 20, Resolution.Minute)
 
     def OnData(self, data):
-        # Access Data
         bar = data[self.symbol]
         
-        # Trading Logic
+        # Determine trend and allocate portfolio sizing
         if not self.Portfolio[self.symbol].Invested:
             if bar.Close > self.sma.Value:
-                self.SetHoldings(self.symbol, 1.0) # 100% Allocation
-        
+                self.SetHoldings(self.symbol, 1.0) 
         elif bar.Close < self.sma.Value:
             self.Liquidate(self.symbol)
 ```
 
-### 2. SDK Reference
-| Method | Description |
-| :--- | :--- |
-| `Initialize()` | Setup implementation. Define cash, start/end dates, and subscriptions. |
-| `OnData(slice)` | Event handler for new data ticks/bars. |
-| `AddEquity(symbol, resolution)` | Subscribe to a stock. |
-| `SMA(symbol, period)` | Register a Simple Moving Average indicator. |
-| `SetHoldings(symbol, percent)` | Rebalance portfolio to target percentage (0.0 - 1.0). |
-| `Liquidate(symbol)` | Close all positions for a symbol. |
-
-### 3. Running Backtests
-Run a backtest using Docker Compose. The `AlgorithmEngine` automatically loads the strategy and feeds it historical data from the `Replayer`.
-
-```bash
-# Run Backtest with specific Strategy and Run ID
-docker compose run --rm \
-  -e BACKTEST_MODE=true \
-  -e RUN_ID=my_test_run \
-  -e STRATEGY_NAME=strategies.demo_algo.DemoStrategy \
-  strategy_runtime python main.py
-```
-
-### 4. Backtest Reports
-Results (Order History, Equity Curve) are saved to PostgreSQL tables:
-- `backtest_portfolios`
-- `backtest_orders`
-- `backtest_positions`
-
-Visualize results using the **Frontend Dashboard**.
-
 ---
 
-##  API Documentation
-
-**Base URL:** http://localhost:8080
-
-### Get Live Quote
-- `GET /api/v1/market/quote/{symbol}`
-
-### Get Option Greeks
-- `GET /api/v1/market/greeks/{symbol}`
-
-### Get Trade History
-- `GET /api/v1/trades?limit=50`
-
-### Search Instruments
-- `GET /api/v1/instruments/search?query=<text>`
-
----
-
-## 🛠 Developer Utilities
-
-### Data Backfiller
-Downloads historical 1-minute OHLCV data for backtesting.
-- Configure parameters in `services/backfiller/main.py`
-- Run: `docker compose run --rm backfiller`
-
-### System Doctor
-Runs diagnostics on Kafka, databases, and API connectivity.
-- `docker compose run --rm doctor`
-
----
-
-##  Database Schema
-
-### PostgreSQL (`quant_platform`)
-- instruments — master symbol dictionary
-- executed_orders — audit trail of trades
-- users — authentication and profile data
-
-### QuestDB (`qdb`)
-- ticks — price, volume, spread, aggressor
-- option_greeks — IV, delta, gamma
-- ohlc — 1-minute historical candles
-
----
-
-##  Troubleshooting
-
-### Kafka Connection Refused
-Kafka takes ~30s to boot on macOS.  
-Restart ingestor if needed.
-
-### HTTP 401 Unauthorized
-Token expired — rerun authentication helper.
-
-### Topic Not Found
-Topics auto-create; if failure occurs, run system doctor.
-
-## 👤 Author
-Suprath PS
+## Disclaimer
+This software is for educational, quantitative research, and informational purposes only. Do not risk money which you are afraid to lose. USE THE SOFTWARE AT YOUR OWN RISK. THE AUTHORS AND ALL AFFILIATES ASSUME NO RESPONSIBILITY FOR YOUR TRADING RESULTS.
