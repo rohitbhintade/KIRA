@@ -128,6 +128,19 @@ To test different strategy parameters:
 4. **Mind Drawdowns**: Keep max drawdown <10% of capital
 5. **Respect API Limits**: 1-minute data limited to 30 days per request
 
+### Sharpe Ratio Stability Warning
+
+The Sharpe Ratio is **not reliable for short backtest periods**. With very few data points, a single lucky week can make a bad strategy look excellent, and vice versa.
+
+| Backtest Period | Sharpe Reliability |
+|---|---|
+| 1 - 4 weeks | Very unreliable. Ignore the value. |
+| 1 - 3 months | Rough estimate. Use alongside Win Rate and Drawdown. |
+| 6 months - 1 year | Reasonably meaningful. |
+| 1 year+ | Statistically robust. |
+
+A strategy with 3 trades and a Sharpe of 4.5 is meaningless. Always aim for at least 30+ trades over 3+ months before trusting the Sharpe Ratio as a signal.
+
 ---
 
 ##  Known Limitations
@@ -148,3 +161,27 @@ To test different strategy parameters:
 
 **"QuestDB connection failed"**
 → Ensure QuestDB is running: `docker compose ps questdb_tsdb`
+
+**"401 Unauthorized" or "Token expired" during backfill or live trading"**
+→ Your Upstox access token has expired. Tokens are valid for exactly 24 hours.
+
+To renew your token:
+1. Open the Upstox authorization URL in your browser:
+   ```
+   https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=YOUR_API_KEY&redirect_uri=http://localhost
+   ```
+2. Log in and copy the `code` from the redirect URL.
+3. Exchange it for a new token:
+   ```bash
+   curl -X POST https://api.upstox.com/v2/login/authorization/token \
+     -H 'Content-Type: application/x-www-form-urlencoded' \
+     -d 'code=YOUR_CODE&client_id=YOUR_API_KEY&client_secret=YOUR_SECRET&redirect_uri=http://localhost&grant_type=authorization_code'
+   ```
+4. Copy the `access_token` from the response and update your `.env` file:
+   ```
+   UPSTOX_ACCESS_TOKEN=your_new_token_here
+   ```
+5. Restart the relevant services:
+   ```bash
+   docker compose -f infra/docker-compose.yml restart ingestion strategy_runtime backfiller
+   ```

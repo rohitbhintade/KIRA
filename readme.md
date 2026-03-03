@@ -177,5 +177,62 @@ class MomentumStrategy(QCAlgorithm):
 
 ---
 
+## Upstox Access Token
+
+KIRA uses the **Upstox V3 API** for real-time market data, historical backfill, and live order execution. Upstox access tokens expire every 24 hours, so you need to regenerate one each trading day before the market opens.
+
+### How to Get Your Token
+
+1. Log in to the [Upstox Developer Console](https://developer.upstox.com/).
+2. Create a new application (or open your existing one).
+3. Set the **Redirect URL** to `http://localhost` in your app settings.
+4. Generate your authorization URL in this format and open it in your browser:
+   ```
+   https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=YOUR_API_KEY&redirect_uri=http://localhost
+   ```
+5. After logging in, Upstox will redirect you to `http://localhost?code=AUTHORIZATION_CODE`. Copy the `code` value from the URL.
+6. Exchange the code for an access token by running:
+   ```bash
+   curl -X POST https://api.upstox.com/v2/login/authorization/token \
+     -H 'Content-Type: application/x-www-form-urlencoded' \
+     -d 'code=YOUR_CODE&client_id=YOUR_API_KEY&client_secret=YOUR_API_SECRET&redirect_uri=http://localhost&grant_type=authorization_code'
+   ```
+7. Copy the `access_token` value from the JSON response.
+
+### Updating the Token Daily
+
+Once you have the new token, update your `.env` file before starting (or restarting) the platform:
+
+```bash
+# Open the .env file and update the UPSTOX_ACCESS_TOKEN value
+UPSTOX_ACCESS_TOKEN=your_new_token_here
+
+# Then restart the ingestion and strategy services to pick up the new token
+docker compose -f infra/docker-compose.yml restart ingestion strategy_runtime
+```
+
+For a smoother daily experience, you can automate the token fetch using a simple Python script that calls the Upstox OAuth flow and updates the `.env` file automatically before market open (9:00 AM IST).
+
+---
+
+## A Note on Sharpe Ratio Stability
+
+The Sharpe Ratio reported in your backtest results can be **highly unreliable for short testing periods**.
+
+When you backtest over a period shorter than 6 months, the result from the formula is computed using very few daily return data points. Statistically, a small number of outlier days (a single massive gain or loss) can swing the Sharpe Ratio dramatically, making a mediocre strategy look exceptional or a solid strategy look terrible.
+
+As a guide:
+
+| Backtest Period | Sharpe Reliability |
+|---|---|
+| 1 - 4 weeks | Very unreliable. Ignore the value. |
+| 1 - 3 months | Rough estimate. Use with caution. |
+| 6 months - 1 year | Reasonably meaningful. |
+| 1 year+ | Statistically robust. |
+
+Always pair the Sharpe Ratio with the **Win Rate**, **Max Drawdown**, and **total number of trades** to get a complete picture. A strategy with 3 trades and a Sharpe Ratio of 4.5 tells you almost nothing.
+
+---
+
 ## Disclaimer
 This software is for educational, quantitative research, and informational purposes only. Do not risk money which you are afraid to lose. USE THE SOFTWARE AT YOUR OWN RISK. THE AUTHORS AND ALL AFFILIATES ASSUME NO RESPONSIBILITY FOR YOUR TRADING RESULTS.
