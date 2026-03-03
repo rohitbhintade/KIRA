@@ -8,20 +8,39 @@ Built with a sophisticated microservices architecture, KIRA handles real-time da
 
 ## Quick Start
 
-You can deploy the entire production-ready platform with a single command. 
+You can deploy the entire production-ready platform with a single command.
 
-Ensure you have Docker Desktop installed with at least 8 GB of RAM allocated, and your Upstox Developer API Credentials ready.
+Requirements: **Docker Desktop** with at least 8 GB of RAM allocated, and your **Upstox Developer API credentials** ready.
 
 ```bash
-mkdir kira && cd kira
-curl -O https://raw.githubusercontent.com/suprathps/kira/master/docker-compose.prod.yml
-curl -o .env https://raw.githubusercontent.com/suprathps/kira/master/services/ingestion/.env.example
+# 1. Clone the repository
+git clone https://github.com/Suprath/KIRA.git kira
+cd kira
 
-# Open the .env file in your editor and add your Upstox API keys
+# 2. Create your environment file from the template
+cp .env.example .env
+```
+
+Open the `.env` file in your editor and fill in three required fields:
+
+```bash
+UPSTOX_API_KEY=your_api_key_here
+UPSTOX_API_SECRET=your_api_secret_here
+UPSTOX_ACCESS_TOKEN=your_daily_access_token_here
+```
+
+> **Important:** Also set `GITHUB_REPOSITORY_LOWER=suprath/kira` in `.env` — this tells Docker where to pull the pre-built images from GitHub Container Registry (GHCR).
+
+```bash
+# 3. Start the platform (pulls all pre-built images from GHCR)
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-Once the containers have initialized, you can access the trading dashboard by navigating to `http://localhost:3000` in your web browser.
+Once the containers have initialized (30-60 seconds), open your browser and navigate to:
+
+- **Trading Dashboard:** `http://localhost:3001`
+- **API Gateway:** `http://localhost:8080`
+- **QuestDB Console:** `http://localhost:9000`
 
 ---
 
