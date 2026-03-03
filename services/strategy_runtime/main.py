@@ -447,6 +447,14 @@ def run_backtest_process(run_id: str, request: BacktestRequest, strategy_file_pa
             
         logger.info(f"✅ Backtest Job {run_id} Completed (Code: {process.returncode})")
         
+        # Notify the log file so the frontend knows to stop polling
+        from datetime import datetime
+        with open(log_file, "a") as outfile:
+            if process.returncode != 0:
+                outfile.write(f"\n{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} - ERROR - Backtest Stopped (Error code: {process.returncode})\n")
+            else:
+                outfile.write(f"\n{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} - INFO - Backtest Runner Finished.\n")
+
         # ── Always compute stats from DB after process ends ──
         # The subprocess may have already called SaveStatistics, but we
         # compute them again to be safe (upsert handles duplicates).
@@ -459,6 +467,13 @@ def run_backtest_process(run_id: str, request: BacktestRequest, strategy_file_pa
         logger.error(f"Backtest Job Failed: {e}")
         if run_id in active_processes:
             del active_processes[run_id]
+        
+        try:
+            from datetime import datetime
+            with open(log_file, "a") as outfile:
+                outfile.write(f"\n{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} - ERROR - Backtest Stopped. Exception: {e}\n")
+        except:
+            pass
 
 
 def _compute_and_save_stats(run_id: str):

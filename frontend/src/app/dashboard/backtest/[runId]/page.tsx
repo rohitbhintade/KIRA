@@ -54,6 +54,7 @@ export default function BacktestResultPage() {
     const [loading, setLoading] = useState(true);
     const [stats, setStats] = useState<Stats | null>(null);
     const [equityCurve, setEquityCurve] = useState<EquityCurvePoint[]>([]);
+    const [statsError, setStatsError] = useState<string | null>(null);
 
     useEffect(() => {
         if (!runId) return;
@@ -87,7 +88,11 @@ export default function BacktestResultPage() {
     }, [runId]);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const processBacktestData = (tradesData: any[], statsData: Record<string, number> | null) => {
+    const processBacktestData = (tradesData: any[], statsData: Record<string, any> | null) => {
+        if (statsData?.error) {
+            setStatsError(statsData.error);
+        }
+
         // Map API stock_name → Trade.name (API resolves names via instruments table)
         const mappedTrades: Trade[] = tradesData.map(t => ({
             ...t,
@@ -212,6 +217,16 @@ export default function BacktestResultPage() {
                     {stats ? formatPct(stats.totalReturn) : '—'}
                 </Badge>
             </div>
+
+            {statsError && (
+                <div className="bg-amber-500/10 border border-amber-500/20 text-amber-400 p-4 rounded-lg flex items-center gap-3">
+                    <Activity className="h-5 w-5 shrink-0" />
+                    <div>
+                        <h3 className="font-semibold text-sm">Strategy completed with ZERO trades.</h3>
+                        <p className="text-xs text-amber-400/80 mt-0.5">Your strategy script executed successfully but did not open or close any positions. {statsError}</p>
+                    </div>
+                </div>
+            )}
 
             {stats && (
                 <>

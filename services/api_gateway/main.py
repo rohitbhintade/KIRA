@@ -574,7 +574,18 @@ def get_backtest_stats(run_id: str, conn = Depends(get_pg_conn)):
         pnl_rows = cur.fetchall()
 
         if not pnl_rows:
-            return {}
+            return {
+                "total_return": 0.0,
+                "max_drawdown": 0.0,
+                "sharpe_ratio": 0.0,
+                "win_rate": 0,
+                "gross_profit": 0.0,
+                "gross_loss": 0.0,
+                "net_profit": 0.0,
+                "total_trades": 0,
+                "expectancy": 0.0,
+                "profit_factor": 0.0
+            }
 
         pnl_list = [float(r[0]) for r in pnl_rows if r[0] is not None and float(r[0]) != 0.0]
         all_pnls = [float(r[0]) for r in pnl_rows if r[0] is not None]
