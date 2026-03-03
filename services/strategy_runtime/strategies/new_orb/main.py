@@ -1,281 +1,348 @@
 from quant_sdk import QCAlgorithm, Resolution
 from datetime import time, timedelta
-import numpy as np
 
-class NiftyIntradayMomentum(QCAlgorithm):
+class NiftyIntradayMeanReversion(QCAlgorithm):
     """
-    Multi-Factor Intraday Momentum Strategy for Indian Markets
-    
-    Logic:
-    1. Opening Range Breakout (ORB): First 15-minute range establishes bias
-    2. Volume Confirmation: Breakout must be accompanied by 1.5x average volume
-    3. EMA Trend Filter: Only trade in direction of 9 EMA slope
-    4. Dynamic Position Sizing: Based on ATR volatility
-    5. Hard Stop-Loss: 1.5x ATR or time-based exit at 3:15 PM
+    MEAN REVERSION STRATEGY - Buy dips, sell rips
+    Works better in Indian market chop
     """
     
     def Initialize(self):
-        # Capital & Dates
-        self.SetCash(500000)  # ₹5L - realistic for Indian retail
+        self.SetCash(100000)
         self.SetStartDate(2023, 1, 1)
-        self.SetEndDate(2024, 12, 31)
+        self.SetEndDate(2023, 6, 30)
+        self.SetLeverage(5.0)
         
-        # Leverage for Intraday (MIS)
-        self.SetLeverage(5.0)  # 5x intraday leverage typical in India
-        
-        # Universe: Top 10 Nifty 50 liquid stocks
-        # Format: NSE_EQ|ISIN - Reliance, TCS, HDFC Bank, ICICI Bank, Infosys, etc.
+        # Only most liquid
         self.symbols = [
             "NSE_EQ|INE002A01018",  # Reliance
             "NSE_EQ|INE467B01029",  # TCS
-            "NSE_EQ|INE040A01034",  # HDFC Bank
-            "NSE_EQ|INE090A01021",  # ICICI Bank
-            "NSE_EQ|INE009A01021",  # Infosys
-            "NSE_EQ|INE154A01025",  # ITC
-            "NSE_EQ|INE238A01034",  # Kotak Mahindra
-            "NSE_EQ|INE062A01020",  # L&T
-            "NSE_EQ|INE917I01010",  # Axis Bank
-            "NSE_EQ|INE669E01016",  # Bajaj Finance
         ]
         
-        # Resolution: Minute bars for precise entry/exit
         for sym in self.symbols:
             self.AddEquity(sym, Resolution.Minute)
         
-        # Strategy Parameters
-        self.orb_minutes = 15           # Opening range period
-        self.volume_lookback = 20       # Volume SMA period
-        self.atr_period = 14            # ATR for position sizing & stops
-        self.ema_fast = 9               # Fast EMA for trend
-        self.ema_slow = 21              # Slow EMA for trend confirmation
-        self.volume_threshold = 1.5     # Volume breakout multiplier
-        self.risk_per_trade = 0.01      # 1% risk per trade
-        self.max_positions = 3          # Max concurrent positions
+        # MEAN REVERSION parameters
+        self.lookback = 20           # Lookback for range
+        self.entry_zscore = 1.5      # Enter at 1.5 std dev from mean
+        self.exit_zscore = 0.5       # Exit at 0.5 std dev (mean reversion)
+        self.atr_period = 14
+        self.risk_per_trade = 0.005  # 0.5% risk
+        self.max_positions = 1
+        self.min_hold_minutes = 15   # Minimum hold time
         
-        # Tracking dictionaries for each symbol
-        self.orb_high = {}
-        self.orb_low = {}
-        self.orb_volume_avg = {}
-        self.daily_atr = {}
+        # Tracking
         self.entry_price = {}
         self.stop_loss = {}
         self.target_price = {}
-        self.position_direction = {}    # 1 for long, -1 for short, 0 for none
+        self.position_direction = {}
+        self.entry_time = {}
+        self.daily_trade_count = {}
         
-        # Indicators per symbol
-        self.indicators = {}
-        for sym in self.symbols:
-            self.indicators[sym] = {
-                'sma_volume': self.SMA(sym, self.volume_lookback, Resolution.Minute),
-                'atr': self.ATR(sym, self.atr_period, Resolution.Minute),
-                'ema_fast': self.EMA(sym, self.ema_fast, Resolution.Minute),
-                'ema_slow': self.EMA(sym, self.ema_slow, Resolution.Minute),
-                'high_15': self.MAX(sym, self.orb_minutes, Resolution.Minute),  # Rolling 15-min high
-                'low_15': self.MIN(sym, self.orb_minutes, Resolution.Minute),   # Rolling 15-min low
-            }
+        # Price history for calculations
+        self.price_history = {sym: [] for sym in self.symbols}
+        self.volume_history = {sym: [] for sym in self.symbols}
         
-        # Schedule end-of-day liquidation (3:15 PM IST)
+        # Schedule
         self.Schedule.On(self.DateRules.EveryDay(), 
                         self.TimeRules.At(15, 15), 
                         self.LiquidateAllPositions)
-        
-        # Reset ORB levels at market open (9:15 AM IST)
         self.Schedule.On(self.DateRules.EveryDay(), 
                         self.TimeRules.At(9, 15), 
-                        self.ResetORBLevels)
+                        self.ResetDaily)
         
-        self.Log("Strategy Initialized - Nifty Intraday Momentum v1.0")
+        self.Log("Mean Reversion Strategy Initialized")
 
-    def ResetORBLevels(self):
-        """Reset Opening Range levels at market open"""
+    def ResetDaily(self):
         for sym in self.symbols:
-            self.orb_high[sym] = None
-            self.orb_low[sym] = None
-            self.orb_volume_avg[sym] = None
-            self.daily_atr[sym] = None
-        self.Log("ORB levels reset for new trading day")
+            self.daily_trade_count[sym] = 0
+            self.price_history[sym] = []
+            self.volume_history[sym] = []
+        self.Log("Daily reset")
 
     def LiquidateAllPositions(self):
-        """Square off all positions at 3:15 PM IST (MIS requirement)"""
         for sym in self.symbols:
-            if self.Portfolio[sym].Invested:
+            if self.IsInvested(sym):
                 self.Liquidate(sym)
-                self.Log(f"EOD Liquidation: {sym}")
                 self.position_direction[sym] = 0
-        self.Log("All positions liquidated for EOD")
+        self.Log("EOD Liquidation")
+
+    def IsInvested(self, symbol):
+        try:
+            return self.Portfolio[symbol].Invested
+        except:
+            return self.GetQuantity(symbol) != 0
+
+    def GetQuantity(self, symbol):
+        try:
+            return self.Portfolio[symbol].Quantity
+        except:
+            return 0
+
+    def GetHoldingsValue(self, symbol):
+        try:
+            qty = self.GetQuantity(symbol)
+            price = self.Portfolio[symbol].Price
+            return abs(qty * price)
+        except:
+            return 0
+
+    def GetTotalExposure(self):
+        return sum(self.GetHoldingsValue(s) for s in self.symbols)
+
+    def GetBarFromTick(self, sym, tick_data):
+        price = getattr(tick_data, 'Price', getattr(tick_data, 'LastPrice', getattr(tick_data, 'value', None)))
+        volume = getattr(tick_data, 'Size', getattr(tick_data, 'Quantity', getattr(tick_data, 'Volume', 0)))
+        
+        if price is None:
+            raise AttributeError("No price in tick")
+        
+        class SimpleBar:
+            def __init__(self, p, v):
+                self.Open = p
+                self.High = p
+                self.Low = p
+                self.Close = p
+                self.Volume = v
+        return SimpleBar(price, volume)
+
+    def GetTime(self, data):
+        try:
+            t = data.Time
+            if isinstance(t, str):
+                from datetime import datetime
+                dt = datetime.fromisoformat(t.replace('Z', '+00:00'))
+                return dt.time()
+            return t.time() if hasattr(t, 'time') else t
+        except:
+            return None
+
+    def CalculateStats(self, prices):
+        """Calculate mean, std dev, z-score"""
+        if len(prices) < self.lookback:
+            return None, None, None
+        
+        recent = prices[-self.lookback:]
+        mean = sum(recent) / len(recent)
+        
+        # Standard deviation
+        variance = sum((p - mean) ** 2 for p in recent) / len(recent)
+        std = variance ** 0.5
+        
+        current = prices[-1]
+        zscore = (current - mean) / std if std > 0 else 0
+        
+        return mean, std, zscore
+
+    def CalculateATR(self, sym):
+        history = self.price_history[sym]
+        if len(history) < 2:
+            return None
+        
+        tr_values = []
+        for i in range(1, min(len(history), self.atr_period + 1)):
+            curr = history[-i]
+            prev = history[-i-1]
+            tr = max(curr['high'] - curr['low'],
+                     abs(curr['high'] - prev['close']),
+                     abs(curr['low'] - prev['close']))
+            tr_values.append(tr)
+        
+        if len(tr_values) >= self.atr_period:
+            return sum(tr_values[:self.atr_period]) / self.atr_period
+        return None
 
     def OnData(self, data):
-        current_time = data.Time.time()
+        current_time = self.GetTime(data)
+        if current_time is None:
+            return
         
-        # Market hours: 9:15 AM to 3:30 PM IST
-        # No new trades after 2:45 PM (sufficient time to exit)
-        if current_time < time(9, 15) or current_time > time(14, 45):
+        # Skip first hour (let range establish)
+        if current_time < time(9, 30):
+            return
+        
+        # No new entries after 2:30 PM
+        if current_time > time(14, 30):
+            # Manage existing only
+            for sym in self.symbols:
+                if self.position_direction.get(sym, 0) != 0:
+                    self.ManageExit(sym, data, current_time)
+            return
+        
+        # Force exit at 3:10 PM
+        if current_time >= time(15, 10):
+            for sym in self.symbols:
+                if self.IsInvested(sym):
+                    self.Liquidate(sym)
+                    self.position_direction[sym] = 0
             return
         
         for sym in self.symbols:
             if not data.ContainsKey(sym):
                 continue
             
-            bar = data[sym]
-            ind = self.indicators[sym]
-            
-            # Wait for indicators to warm up
-            if not all([ind['sma_volume'].IsReady, 
-                       ind['atr'].IsReady,
-                       ind['ema_fast'].IsReady, 
-                       ind['ema_slow'].IsReady]):
+            # Get bar
+            try:
+                tick_data = data[sym]
+                if hasattr(tick_data, 'Open'):
+                    bar = tick_data
+                else:
+                    bar = self.GetBarFromTick(sym, tick_data)
+            except Exception as e:
                 continue
             
-            # Calculate ORB levels during first 15 minutes
-            if current_time <= time(9, 30):
-                self.UpdateORBLevels(sym, bar, ind)
+            # Update history
+            self.price_history[sym].append({
+                'high': bar.High,
+                'low': bar.Low,
+                'close': bar.Close
+            })
+            self.volume_history[sym].append(bar.Volume)
+            
+            # Limit history
+            max_hist = max(self.lookback, self.atr_period) + 10
+            if len(self.price_history[sym]) > max_hist:
+                self.price_history[sym].pop(0)
+                self.volume_history[sym].pop(0)
+            
+            # Need enough data
+            if len(self.price_history[sym]) < self.lookback:
                 continue
             
-            # Trading logic only after ORB established and not already in position
-            if self.position_direction.get(sym, 0) == 0:
-                self.CheckEntrySignals(sym, bar, ind, current_time)
-            else:
-                self.ManageOpenPosition(sym, bar, ind)
+            # Calculate stats
+            closes = [p['close'] for p in self.price_history[sym]]
+            mean, std, zscore = self.CalculateStats(closes)
+            atr = self.CalculateATR(sym)
+            
+            if mean is None or atr is None or atr == 0:
+                continue
+            
+            # Manage existing position
+            if self.position_direction.get(sym, 0) != 0:
+                self.ManageExit(sym, bar, mean, std, zscore, current_time)
+                continue
+            
+            # Check entry (max 2 trades per day per symbol)
+            if self.daily_trade_count.get(sym, 0) >= 2:
+                continue
+            
+            self.CheckEntry(sym, bar, mean, std, zscore, atr, current_time)
 
-    def UpdateORBLevels(self, sym, bar, ind):
-        """Track highest high and lowest low during opening range"""
-        if self.orb_high.get(sym) is None or bar.High > self.orb_high[sym]:
-            self.orb_high[sym] = bar.High
+    def CheckEntry(self, sym, bar, mean, std, zscore, atr):
+        """MEAN REVERSION entries: Buy when price below mean, sell when above"""
+        portfolio_value = self.Portfolio.TotalPortfolioValue
+        total_exposure = self.GetTotalExposure()
         
-        if self.orb_low.get(sym) is None or bar.Low < self.orb_low[sym]:
-            self.orb_low[sym] = bar.Low
+        if total_exposure / portfolio_value > 0.5:
+            return
         
-        # Store pre-market average volume for comparison
-        if self.orb_volume_avg.get(sym) is None and ind['sma_volume'].IsReady:
-            self.orb_volume_avg[sym] = ind['sma_volume'].Value
+        # LONG: Price is stretched below mean (oversold)
+        if zscore < -self.entry_zscore:
+            # Additional: Check if in uptrend (higher lows) - optional filter
+            # Remove this if you want pure mean reversion
+            recent_lows = [p['low'] for p in self.price_history[sym][-5:]]
+            if recent_lows[-1] > min(recent_lows):  # Higher low forming
+                self.EnterLong(sym, bar, mean, atr)
+        
+        # SHORT: Price is stretched above mean (overbought)
+        elif zscore > self.entry_zscore:
+            recent_highs = [p['high'] for p in self.price_history[sym][-5:]]
+            if recent_highs[-1] < max(recent_highs):  # Lower high forming
+                self.EnterShort(sym, bar, mean, atr)
 
-    def CheckEntrySignals(self, sym, bar, ind, current_time):
-        """Check for ORB breakout with confirmation filters"""
-        if self.orb_high.get(sym) is None or self.orb_low.get(sym) is None:
+    def EnterLong(self, sym, bar, mean, atr):
+        """Enter long position targeting mean"""
+        portfolio_value = self.Portfolio.TotalPortfolioValue
+        risk_amount = portfolio_value * self.risk_per_trade
+        
+        # Stop below recent low or 2 ATR
+        recent_lows = [p['low'] for p in self.price_history[sym][-5:]]
+        stop_price = min(min(recent_lows), bar.Close - 2 * atr)
+        stop_distance = bar.Close - stop_price
+        
+        if stop_distance <= 0:
             return
         
-        # Trend filter: Only trade in direction of EMA alignment
-        trend_bullish = ind['ema_fast'].Value > ind['ema_slow'].Value
-        trend_bearish = ind['ema_fast'].Value < ind['ema_slow'].Value
+        position_value = (risk_amount / stop_distance) * bar.Close
+        max_position = portfolio_value * 0.25
+        position_value = min(position_value, max_position)
+        target_pct = position_value / portfolio_value
         
-        # Volume confirmation: Current volume > 1.5x average
-        volume_confirmed = bar.Volume > (self.orb_volume_avg.get(sym, bar.Volume) * self.volume_threshold)
-        
-        # Position sizing based on ATR volatility
-        atr_value = ind['atr'].Value
-        if atr_value == 0:
+        if target_pct < 0.05:
             return
         
-        # Count current positions
-        current_positions = sum(1 for v in self.position_direction.values() if v != 0)
-        if current_positions >= self.max_positions:
-            return
+        self.SetHoldings(sym, target_pct)
+        self.entry_price[sym] = bar.Close
+        self.stop_loss[sym] = stop_price
+        self.target_price[sym] = mean  # Target is the mean (reversion)
+        self.position_direction[sym] = 1
+        self.entry_time[sym] = bar.Close  # Track entry for time exit
+        self.daily_trade_count[sym] = self.daily_trade_count.get(sym, 0) + 1
         
-        # LONG Setup: Break above ORB high + bullish trend + volume
-        if bar.Close > self.orb_high[sym] and trend_bullish and volume_confirmed:
-            # Calculate position size: Risk 1% of portfolio per trade
-            portfolio_value = self.Portfolio.TotalPortfolioValue
-            risk_amount = portfolio_value * self.risk_per_trade
-            position_size = risk_amount / (1.5 * atr_value)  # Stop loss at 1.5 ATR
-            
-            # Convert to percentage of portfolio (max 30% per position)
-            max_position_value = portfolio_value * 0.30
-            shares = min(position_size, max_position_value / bar.Close)
-            target_pct = (shares * bar.Close) / portfolio_value
-            
-            if target_pct > 0.05:  # Minimum 5% allocation
-                self.SetHoldings(sym, target_pct)
-                self.entry_price[sym] = bar.Close
-                self.stop_loss[sym] = bar.Close - (1.5 * atr_value)
-                self.target_price[sym] = bar.Close + (3.0 * atr_value)  # 1:2 risk-reward
-                self.position_direction[sym] = 1
-                
-                self.Log(f"LONG {sym} @ {bar.Close:.2f}, "
-                        f"Size: {target_pct:.2%}, "
-                        f"SL: {self.stop_loss[sym]:.2f}, "
-                        f"TG: {self.target_price[sym]:.2f}, "
-                        f"Vol: {bar.Volume/ind['sma_volume'].Value:.1f}x")
-        
-        # SHORT Setup: Break below ORB low + bearish trend + volume
-        elif bar.Close < self.orb_low[sym] and trend_bearish and volume_confirmed:
-            portfolio_value = self.Portfolio.TotalPortfolioValue
-            risk_amount = portfolio_value * self.risk_per_trade
-            position_size = risk_amount / (1.5 * atr_value)
-            
-            max_position_value = portfolio_value * 0.30
-            shares = min(position_size, max_position_value / bar.Close)
-            target_pct = -(shares * bar.Close) / portfolio_value  # Negative for short
-            
-            if abs(target_pct) > 0.05:
-                self.SetHoldings(sym, target_pct)
-                self.entry_price[sym] = bar.Close
-                self.stop_loss[sym] = bar.Close + (1.5 * atr_value)
-                self.target_price[sym] = bar.Close - (3.0 * atr_value)
-                self.position_direction[sym] = -1
-                
-                self.Log(f"SHORT {sym} @ {bar.Close:.2f}, "
-                        f"Size: {target_pct:.2%}, "
-                        f"SL: {self.stop_loss[sym]:.2f}, "
-                        f"TG: {self.target_price[sym]:.2f}")
+        self.Log(f"LONG {sym} @ {bar.Close:.2f}, Target={mean:.2f}, SL={stop_price:.2f}")
 
-    def ManageOpenPosition(self, sym, bar, ind):
-        """Manage open positions: trailing stops, target hits, time exits"""
-        direction = self.position_direction.get(sym, 0)
-        if direction == 0:
+    def EnterShort(self, sym, bar, mean, atr):
+        """Enter short position targeting mean"""
+        portfolio_value = self.Portfolio.TotalPortfolioValue
+        risk_amount = portfolio_value * self.risk_per_trade
+        
+        recent_highs = [p['high'] for p in self.price_history[sym][-5:]]
+        stop_price = max(max(recent_highs), bar.Close + 2 * atr)
+        stop_distance = stop_price - bar.Close
+        
+        if stop_distance <= 0:
             return
         
-        current_price = bar.Close
-        entry = self.entry_price.get(sym, current_price)
-        stop = self.stop_loss.get(sym, current_price)
-        target = self.target_price.get(sym, current_price)
+        position_value = (risk_amount / stop_distance) * bar.Close
+        max_position = portfolio_value * 0.25
+        position_value = min(position_value, max_position)
+        target_pct = -position_value / portfolio_value
         
-        # ATR-based trailing stop logic (lock in profits)
-        atr = ind['atr'].Value
+        if abs(target_pct) < 0.05:
+            return
         
-        if direction == 1:  # Long position
-            # Target hit - take profit
-            if current_price >= target:
-                self.Liquidate(sym)
-                self.Log(f"LONG Target Hit {sym} @ {current_price:.2f}, "
-                        f"PnL: {(current_price/entry - 1)*100:.2f}%")
-                self.position_direction[sym] = 0
-                return
-            
-            # Stop loss hit
-            if current_price <= stop:
-                self.Liquidate(sym)
-                self.Log(f"LONG Stop Loss {sym} @ {current_price:.2f}, "
-                        f"Loss: {(current_price/entry - 1)*100:.2f}%")
-                self.position_direction[sym] = 0
-                return
-            
-            # Trailing stop: Move SL to breakeven + 0.5 ATR once up 1 ATR
-            if current_price > entry + atr and stop < entry:
-                new_stop = entry + (0.5 * atr)
-                if new_stop > stop:
-                    self.stop_loss[sym] = new_stop
-                    self.Log(f"Trailing Stop Updated {sym}: {new_stop:.2f}")
+        self.SetHoldings(sym, target_pct)
+        self.entry_price[sym] = bar.Close
+        self.stop_loss[sym] = stop_price
+        self.target_price[sym] = mean
+        self.position_direction[sym] = -1
+        self.entry_time[sym] = bar.Close
+        self.daily_trade_count[sym] = self.daily_trade_count.get(sym, 0) + 1
         
-        else:  # Short position
-            # Target hit
-            if current_price <= target:
-                self.Liquidate(sym)
-                self.Log(f"SHORT Target Hit {sym} @ {current_price:.2f}, "
-                        f"PnL: {(entry/current_price - 1)*100:.2f}%")
-                self.position_direction[sym] = 0
-                return
+        self.Log(f"SHORT {sym} @ {bar.Close:.2f}, Target={mean:.2f}, SL={stop_price:.2f}")
+
+    def ManageExit(self, sym, bar, mean, std, zscore, current_time):
+        """Exit when price reverts to mean or stop hit"""
+        direction = self.position_direction[sym]
+        entry = self.entry_price[sym]
+        stop = self.stop_loss[sym]
+        target = self.target_price[sym]
+        price = bar.Close
+        
+        # Minimum hold time check (avoid churn)
+        # Simplified - just use bar count approximation
+        
+        if direction == 1:  # Long
+            # Exit conditions
+            hit_target = price >= target  # Reached mean
+            hit_stop = price <= stop
+            extended = zscore > 0  # Price now above mean (overbought)
             
-            # Stop loss hit
-            if current_price >= stop:
+            if hit_target or hit_stop or extended:
                 self.Liquidate(sym)
-                self.Log(f"SHORT Stop Loss {sym} @ {current_price:.2f}, "
-                        f"Loss: {(entry/current_price - 1)*100:.2f}%")
+                pnl = (price / entry - 1) * 100
+                reason = 'Target' if hit_target else 'Stop' if hit_stop else 'Extended'
+                self.Log(f"EXIT LONG {sym} @ {price:.2f}, PnL={pnl:.2f}%, {reason}")
                 self.position_direction[sym] = 0
-                return
+        
+        else:  # Short
+            hit_target = price <= target
+            hit_stop = price >= stop
+            extended = zscore < 0  # Price now below mean (oversold)
             
-            # Trailing stop for shorts
-            if current_price < entry - atr and stop > entry:
-                new_stop = entry - (0.5 * atr)
-                if new_stop < stop:
-                    self.stop_loss[sym] = new_stop
-                    self.Log(f"Trailing Stop Updated {sym}: {new_stop:.2f}")
+            if hit_target or hit_stop or extended:
+                self.Liquidate(sym)
+                pnl = (entry / price - 1) * 100
+                reason = 'Target' if hit_target else 'Stop' if hit_stop else 'Extended'
+                self.Log(f"EXIT SHORT {sym} @ {price:.2f}, PnL={pnl:.2f}%, {reason}")
+                self.position_direction[sym] = 0

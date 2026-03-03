@@ -511,7 +511,12 @@ def run(symbol, start, end, initial_cash, speed="fast"):
         sys.exit(1)
 
     # Initialize
-    engine.Initialize()
+    try:
+        engine.Initialize()
+    except Exception as e:
+        import traceback
+        logger.error(f"STRATEGY_ERROR: Error in strategy Initialize(): {e}\n{traceback.format_exc()}")
+        sys.exit(1)
     
     # Override Cash & Set Stats Baseline
     engine.SetInitialCapital(initial_cash)
@@ -599,11 +604,20 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     engine.SetBacktestData(all_ticks)
     
     # Run
-    engine.Run()
+    try:
+        engine.Run()
+    except Exception as e:
+        import traceback
+        logger.error(f"STRATEGY_ERROR: Error during backtest Run(): {e}\n{traceback.format_exc()}")
+        sys.exit(1)
 
     # Save Statistics (Sharpe, Drawdown, etc.)
-    engine.SaveStatistics()
-    
+    try:
+        engine.SaveStatistics()
+    except Exception as e:
+        import traceback
+        logger.error(f"STRATEGY_ERROR: Error saving statistics: {e}\n{traceback.format_exc()}")
+
     logger.info("🏁 Backtest Runner Finished.")
 
 if __name__ == "__main__":

@@ -360,6 +360,11 @@ class AlgorithmEngine:
         _seen_symbols = set(_portfolio.keys())
         _bt_last_date_int = 0
 
+        # Scheduled Events Setup
+        _scheduled = getattr(_algo, 'Schedule', None)
+        _scheduled_events = _scheduled._events if _scheduled else []
+        _last_hm = None
+
         # Speed measurement
         _report_interval = 100_000
         _t_start = _time.time()
@@ -416,6 +421,23 @@ class AlgorithmEngine:
                     _handle_square_off()
                     _exchange._bt_tick_count += 1
                     continue
+
+            # ── Scheduled Events (Check on minute boundaries) ──
+            if _scheduled_events:
+                _current_hm = (td['_hour'], td['_minute'])
+                if _current_hm != _last_hm:
+                    _last_hm = _current_hm
+                    for ev in _scheduled_events:
+                        t_rule = ev['time']
+                        if t_rule.hour == _current_hm[0] and t_rule.minute == _current_hm[1]:
+                            if ev['last_triggered'] != tick_date:
+                                try:
+                                    ev['callback']()
+                                except Exception as _e:
+                                    import traceback as _tb
+                                    logger.error(f"STRATEGY_ERROR: {_e}\n{_tb.format_exc()}")
+                                    raise _e
+                                ev['last_triggered'] = tick_date
 
             # ── User strategy ──
             try:

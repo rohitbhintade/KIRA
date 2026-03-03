@@ -452,50 +452,70 @@ def run_backtest_process(run_id: str, request: BacktestRequest, strategy_file_pa
         ts = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
         with open(log_file, "a") as outfile:
             if process.returncode != 0:
-                # ── Extract full error details from the log so far ──
+                # ── Extract full error details from the log ──
                 full_error_block = ""
                 try:
+                    import re as _re
                     with open(log_file, "r") as readfile:
                         lines = readfile.readlines()
 
-                    # Collect ERROR lines and any subsequent non-timestamped lines (traceback lines)
+                    # Patterns
+                    py_err_re   = _re.compile(r'^(ERROR|CRITICAL):[\w.]+:')
+                    log_line_re = _re.compile(r'^\d{4}-\d{2}-\d{2}|^(DEBUG|INFO|WARNING|ERROR|CRITICAL):[\w.]+:')
+                    ts_err_re   = _re.compile(r'^\d{4}-\d{2}-\d{2}.* - ERROR -')
+
                     error_chunks = []
-                    current_chunk = []
-                    in_error = False
-                    log_line_re = __import__('re').compile(r'^\d{4}-\d{2}-\d{2}')
+                    i = 0
+                    while i < len(lines):
+                        stripped = lines[i].rstrip()
 
-                    for line in lines:
-                        stripped = line.rstrip()
-                        is_new_log_line = bool(log_line_re.match(stripped))
-                        if is_new_log_line:
-                            if current_chunk:
-                                error_chunks.append('\n'.join(current_chunk))
-                                current_chunk = []
-                            if ' - ERROR - ' in stripped:
-                                # Extract just the message after " - ERROR - "
-                                msg = stripped.split(' - ERROR - ', 1)[-1].strip()
-                                current_chunk = [msg]
-                                in_error = True
-                            else:
-                                in_error = False
-                        elif in_error and stripped:
-                            # Continuation line for the current error (traceback lines)
-                            current_chunk.append(stripped)
+                        # ── Raw uncaught Python exception ──
+                        if stripped == 'Traceback (most recent call last):':
+                            tb_lines = [stripped]
+                            i += 1
+                            while i < len(lines):
+                                l = lines[i].rstrip()
+                                if l and bool(log_line_re.match(l)):
+                                    break
+                                tb_lines.append(l)
+                                i += 1
+                            error_chunks.append('\n'.join(tb_lines))
+                            continue
 
-                    if current_chunk:
-                        error_chunks.append('\n'.join(current_chunk))
+                        # ── Python logger ERROR line ──
+                        elif bool(py_err_re.match(stripped)):
+                            msg = stripped.split(':', 2)[-1].strip() if stripped.count(':') >= 2 else stripped
+                            chunk_lines = [msg]
+                            i += 1
+                            while i < len(lines):
+                                l = lines[i].rstrip()
+                                if l and bool(log_line_re.match(l)):
+                                    break
+                                if l:
+                                    chunk_lines.append(l)
+                                i += 1
+                            error_chunks.append('\n'.join(chunk_lines))
+                            continue
+
+                        # ── Timestamped sentinel ERROR line ──
+                        elif bool(ts_err_re.match(stripped)):
+                            msg = stripped.split(' - ERROR - ', 1)[-1].strip()
+                            if not msg.startswith('Backtest Stopped') and not msg.startswith('STRATEGY_ERROR:'):
+                                error_chunks.append(msg)
+
+                        i += 1
 
                     if error_chunks:
-                        # Pick most informative chunk (longest = most traceback detail)
                         best = max(error_chunks, key=len)
-                        full_error_block = best
-                except Exception:
+                        full_error_block = best.strip()
+
+                except Exception as _scan_err:
                     full_error_block = f"Process exited with code {process.returncode}"
 
                 if not full_error_block:
                     full_error_block = f"Process exited with code {process.returncode}"
 
-                # Write as a single parseable line (escape newlines as literal \n for JS parser)
+                # Write as a single parseable line (escape newlines → literal \n for JS parser)
                 compact = full_error_block.replace('\n', '\\n')
                 outfile.write(f"\n{ts} - ERROR - STRATEGY_ERROR: {compact}\n")
                 # Also write the human-readable stopped message

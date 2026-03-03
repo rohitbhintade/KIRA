@@ -48,6 +48,29 @@ class PortfolioManager(dict):
     def MarginRemaining(self):
         return self.Cash # Simplified for now
 
+class TimeRules:
+    @staticmethod
+    def At(hour, minute):
+         from datetime import time
+         return time(hour, minute)
+
+class DateRules:
+    @staticmethod
+    def EveryDay():
+         return "EveryDay"
+
+class ScheduleManager:
+    def __init__(self):
+        self._events = []
+
+    def On(self, date_rule, time_rule, callback):
+        self._events.append({
+             'date_rule': date_rule,
+             'time': time_rule,
+             'callback': callback,
+             'last_triggered': None
+        })
+
 class QCAlgorithm(ABC):
     """
     Base class for all user algorithms.
@@ -59,6 +82,9 @@ class QCAlgorithm(ABC):
         self.Time = datetime.now()
         self.IsWarmingUp = False
         self._logger = logging.getLogger("UserAlgorithm")
+        self.TimeRules = TimeRules()
+        self.DateRules = DateRules()
+        self.Schedule = ScheduleManager()
 
     @abstractmethod
     def Initialize(self):
@@ -114,6 +140,14 @@ class QCAlgorithm(ABC):
         if self.Engine:
             self.Engine.RegisterIndicator(symbol, sma, resolution)
         return sma
+
+    def EMA(self, symbol, period, resolution=Resolution.Minute):
+        """Creates an Exponential Moving Average indicator."""
+        from .indicators import ExponentialMovingAverage # Local import to avoid circular dependency
+        ema = ExponentialMovingAverage(f"EMA({period})", period)
+        if self.Engine:
+            self.Engine.RegisterIndicator(symbol, ema, resolution)
+        return ema
 
     # --- Trading Methods ---
     def SetHoldings(self, symbol, percentage, liquidate_existing_holdings=False):

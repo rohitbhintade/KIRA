@@ -1,1 +1,1 @@
-from .main import NiftyIntradayMomentum
+from .main import NiftyIntradayMeanReversion
