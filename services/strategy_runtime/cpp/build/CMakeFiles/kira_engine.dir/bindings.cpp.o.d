@@ -419,4 +419,4 @@ CMakeFiles/kira_engine.dir/bindings.cpp.o: /app/cpp/bindings.cpp \
  /app/cpp/kira_engine.h /app/cpp/indicators.h /usr/include/c++/14/numeric \
  /usr/include/c++/14/bits/stl_numeric.h \
  /usr/include/c++/14/pstl/glue_numeric_defs.h \
- /app/cpp/transaction_costs.h
+ /app/cpp/transaction_costs.h /app/cpp/statistics.h

@@ -357,6 +357,7 @@ class AlgorithmEngine:
         _sq_minute = self.SQUARE_OFF_MINUTE
         _handle_date_rollover = self._bt_handle_date_rollover
         _handle_square_off = self._bt_handle_square_off
+        _is_cnc = (self.TradingMode == "CNC")
         _seen_symbols = set(_portfolio.keys())
         _bt_last_date_int = 0
 
@@ -415,8 +416,8 @@ class AlgorithmEngine:
                 self._bt_last_date_int = tick_date
                 _handle_date_rollover(td)
 
-            # ── Square-off (pre-computed ints) ──
-            if td['_hour'] == _sq_hour and td['_minute'] >= _sq_minute:
+            # ── Square-off (pre-computed ints) — MIS only ──
+            if not _is_cnc and td['_hour'] == _sq_hour and td['_minute'] >= _sq_minute:
                 if not self._squared_off_today:
                     _handle_square_off()
                     _exchange._bt_tick_count += 1
@@ -782,6 +783,22 @@ class AlgorithmEngine:
                     except ImportError:
                         pass
                     return super().default(obj)
+
+            # ── Downsample equity curve for frontend (≤500 points) ──
+            try:
+                raw_curve = list(self.EquityCurve)
+                if raw_curve:
+                    ds_curve = calculations.downsample_equity_curve(raw_curve, max_points=500)
+                    stats["equity_curve"] = [
+                        {
+                            "time": (pt["timestamp"].isoformat() if hasattr(pt.get("timestamp"), "isoformat") else str(pt.get("timestamp", ""))),
+                            "equity": float(_sf(pt.get("equity", 0)))
+                        }
+                        for pt in ds_curve
+                    ]
+                    logger.info(f"📉 Equity curve: {len(raw_curve)} → {len(ds_curve)} points (downsampled)")
+            except Exception as ds_err:
+                logger.warning(f"Equity curve downsample skipped: {ds_err}")
 
             # Ensure table exists
             cur.execute("""

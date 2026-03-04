@@ -563,55 +563,118 @@ def run(symbol, start, end, initial_cash, speed="fast"):
     universe_symbols = list(universe_symbols)
 
 
-    # 5. Fetch Data for Universe — parallel across all symbols
+    # 5. Fetch & Process Data Day-by-Day (Streaming — constant memory)
+    # Instead of 8M+ ticks in memory, we process one trading day at a time (~35K ticks).
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import time as _time_br
 
-    def _fetch_symbol(sym):
-        candles = fetch_historical_data(sym, start, end)
-        ticks = []
-        if candles:
-            for c in candles:
-                ts, o, h, l, c_price, v = c
-                for t in ohlc_to_ticks(ts, o, h, l, c_price, v):
-                    t['symbol'] = sym
-                    ticks.append(t)
-        return sym, ticks
+    def _fetch_candles_for_date(sym, date_str):
+        """Fetch one symbol's candles for a single date from QuestDB."""
+        conn = get_qdb_conn()
+        if not conn: return sym, []
+        cur = conn.cursor()
+        start_ts = f"{date_str}T00:00:00.000000Z"
+        # Next day for exclusive upper bound
+        from datetime import datetime as dt2, timedelta as td2
+        next_day = (dt2.strptime(date_str, "%Y-%m-%d") + td2(days=1)).strftime("%Y-%m-%dT00:00:00.000000Z")
+        cur.execute("""
+            SELECT timestamp, open, high, low, close, volume
+            FROM ohlc
+            WHERE symbol = %s AND timeframe = '1m'
+              AND timestamp >= %s AND timestamp < %s
+            ORDER BY timestamp ASC
+        """, (sym, start_ts, next_day))
+        candles = cur.fetchall()
+        cur.close()
+        conn.close()
+        return sym, candles
 
-    all_ticks = []
-    _fetch_start = _time_br.time()
-    max_workers = min(len(universe_symbols), 16)  # Up to 16 parallel DB connections
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_fetch_symbol, sym): sym for sym in universe_symbols}
-        for future in as_completed(futures):
-            sym, ticks = future.result()
-            all_ticks.extend(ticks)
-            logger.info(f"📥 {sym}: {len(ticks)} ticks loaded")
-    
-    _fetch_elapsed = _time_br.time() - _fetch_start
-    logger.info(f"⚡ Parallel data fetch: {len(universe_symbols)} symbols, {len(all_ticks):,} ticks in {_fetch_elapsed:.2f}s")
-                 
-    # Sort by timestamp for chronological playback (C-level key for speed)
-    all_ticks.sort(key=itemgetter('timestamp'))
-    
-    if not all_ticks:
-        logger.warning("⚠️ No data found for any symbol in universe. Exiting Backtest.")
+    # Generate trading dates (skip weekends)
+    start_dt = datetime.strptime(start_clean, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_clean, "%Y-%m-%d")
+    trading_dates = []
+    current = start_dt
+    while current <= end_dt:
+        if current.weekday() < 5:  # Mon-Fri
+            trading_dates.append(current.strftime("%Y-%m-%d"))
+        current += timedelta(days=1)
+
+    if not trading_dates:
+        logger.warning("⚠️ No trading dates in range. Exiting.")
         return
-    
-    logger.info(f"✅ Prepared {len(all_ticks)} ticks for simulation.")
 
-    # Load Data
-    engine.SetBacktestData(all_ticks)
-    
-    # Run
-    try:
-        engine.Run()
-    except Exception as e:
-        import traceback
-        logger.error(f"STRATEGY_ERROR: Error during backtest Run(): {e}\n{traceback.format_exc()}")
-        sys.exit(1)
+    logger.info(f"📅 Streaming backtest: {len(trading_dates)} trading days, {len(universe_symbols)} symbols")
 
-    # Save Statistics (Sharpe, Drawdown, etc.)
+    # ── Open persistent session (zero per-trade connections) ──
+    _has_session = hasattr(engine.Exchange, 'begin_session')
+    if _has_session:
+        engine.Exchange.begin_session(initial_cash)
+
+    import time as _time
+    # Inject Initial Equity Point
+    first_date_str = trading_dates[0]
+    first_dt = datetime.strptime(first_date_str, "%Y-%m-%d") - timedelta(seconds=1)
+    engine.EquityCurve.append({'timestamp': first_dt, 'equity': initial_cash})
+
+    # Enable turbo mode
+    engine.Algorithm._turbo_mode = True
+    engine.SyncPortfolio()
+
+    _t0 = _time.time()
+    total_ticks = 0
+    max_workers = min(len(universe_symbols), 16)
+
+    for day_idx, date_str in enumerate(trading_dates):
+        # Fetch this day's candles for all symbols in parallel
+        day_ticks = []
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_fetch_candles_for_date, sym, date_str): sym for sym in universe_symbols}
+            for future in as_completed(futures):
+                sym, candles = future.result()
+                if candles:
+                    for c in candles:
+                        ts, o, h, l, c_price, v = c
+                        for t in ohlc_to_ticks(ts, o, h, l, c_price, v):
+                            t['symbol'] = sym
+                            day_ticks.append(t)
+
+        if not day_ticks:
+            continue  # Holiday or no data
+
+        # Sort this day's ticks chronologically
+        day_ticks.sort(key=itemgetter('timestamp'))
+
+        # Feed to engine and process
+        engine.SetBacktestData(day_ticks)
+        engine._run_python_turbo_path()
+        total_ticks += len(day_ticks)
+
+        # Discard — free memory immediately
+        del day_ticks
+
+        # Progress report every 20 days
+        if (day_idx + 1) % 20 == 0 or day_idx == len(trading_dates) - 1:
+            elapsed = _time.time() - _t0
+            tps = total_ticks / elapsed if elapsed > 0 else 0
+            logger.info(f"📊 Day {day_idx+1}/{len(trading_dates)} done | "
+                        f"{total_ticks:,} ticks in {elapsed:.1f}s ({tps:,.0f} tps)")
+
+    _elapsed = _time.time() - _t0
+    _tps = total_ticks / _elapsed if _elapsed > 0 else 0
+    logger.info(f"⚡ Streaming tick loop done: {total_ticks:,} ticks in {_elapsed:.2f}s = {_tps:,.0f} ticks/sec")
+
+    # ── Flush all buffered orders + positions to DB ──
+    if _has_session:
+        engine.Algorithm.Portfolio['Cash'] = engine.Exchange._bt_balance
+        engine.Exchange.flush_session()
+
+    # Finalize Equity Curve
+    engine.SyncPortfolio()
+    equity = engine.Algorithm.Portfolio.get('TotalPortfolioValue', 0.0)
+    engine.EquityCurve.append({'timestamp': datetime.now(), 'equity': equity})
+    logger.info("✅ Streaming backtest complete.")
+
+    # Save Statistics
     try:
         engine.SaveStatistics()
     except Exception as e:

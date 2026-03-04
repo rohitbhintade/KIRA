@@ -24,8 +24,8 @@ COPY --from=builder /app/wheels /wheels
 COPY --from=builder /app/requirements.txt .
 RUN pip install --no-cache /wheels/*
 RUN pip install --no-cache pybind11[global]
-COPY --from=builder /app/kira_engine*.so /app/
 COPY . .
+COPY --from=builder /app/kira_engine*.so /app/
 RUN chmod +x /app/entrypoint.sh
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python", "main.py"]

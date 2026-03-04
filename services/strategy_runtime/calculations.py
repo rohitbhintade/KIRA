@@ -180,6 +180,9 @@ def _build_returns(
         full = pd.concat([baseline, daily])
         returns = full["equity"].pct_change().dropna()
         returns = returns.replace([np.inf, -np.inf], 0.0)
+        # Drop zero-return days: forward-filled flat equity days compress
+        # volatility and inflate Sharpe/Sortino unrealistically.
+        returns = returns[returns.abs() > 1e-10]
         return returns, 252
 
     # --- Attempt 2: per-tick returns (for short backtests) ---
@@ -412,6 +415,79 @@ def compute_net_profit(initial_capital: float, final_equity: float) -> float:
 # 6.  MASTER AGGREGATOR
 # ────────────────────────────────────────────────────────────
 
+def _try_cpp_statistics(
+    equity_curve: List[Dict],
+    pnl_list: List[float],
+    initial_capital: float,
+    trading_days: int = 0,
+    risk_free_rate: float = 0.06,
+) -> Optional[Dict[str, Any]]:
+    """
+    Attempt to compute all statistics using the C++ kira_engine module.
+    Returns None if the module is not available — caller should fall back.
+    """
+    try:
+        import kira_engine as ke
+    except ImportError:
+        return None
+
+    # Build (timestamp_ms, equity) vector for C++
+    cpp_curve = []
+    for pt in equity_curve:
+        ts = pt.get("timestamp")
+        eq = float(pt.get("equity", 0))
+        if ts is None:
+            continue
+        if isinstance(ts, (int, float)):
+            ts_ms = int(ts)
+        elif hasattr(ts, "timestamp"):
+            ts_ms = int(ts.timestamp() * 1000)
+        else:
+            try:
+                ts_ms = int(pd.Timestamp(ts).timestamp() * 1000)
+            except Exception:
+                continue
+        cpp_curve.append((ts_ms, eq))
+
+    if not cpp_curve:
+        return None
+
+    final_equity = cpp_curve[-1][1] if cpp_curve else initial_capital
+
+    # Build return series (C++ single-pass)
+    returns = ke.build_daily_returns(cpp_curve, initial_capital)
+    ann_factor = 252 if len(cpp_curve) >= 3 else 252
+
+    # Auto-detect trading days
+    if trading_days <= 0:
+        trading_days = max(len(returns), 1)
+
+    # C++ metrics (all single-pass, zero Pandas)
+    sharpe = ke.compute_sharpe(returns, risk_free_rate, ann_factor)
+    sortino = ke.compute_sortino(returns, risk_free_rate, ann_factor)
+    dd = ke.compute_max_drawdown_cpp(cpp_curve)
+    cagr = ke.compute_cagr(initial_capital, final_equity, trading_days)
+    calmar = ke.compute_calmar(cagr, dd.max_drawdown_pct)
+    tm = ke.compute_trade_metrics(pnl_list)
+
+    return {
+        "total_return":     round(ke.compute_total_return(initial_capital, final_equity), 2),
+        "net_profit":       round(ke.compute_net_profit(initial_capital, final_equity), 2),
+        "cagr":             round(cagr, 2),
+        "sharpe_ratio":     round(max(-10, min(10, sharpe)), 2),
+        "sortino_ratio":    round(max(-10, min(10, sortino)), 2),
+        "max_drawdown":     round(dd.max_drawdown_pct, 2),
+        "max_dd_duration":  dd.duration_days,
+        "calmar_ratio":     round(calmar, 2),
+        "total_trades":     tm.total_trades,
+        "win_rate":         round(tm.win_rate, 1),
+        "profit_factor":    round(tm.profit_factor, 2),
+        "expectancy":       round(tm.expectancy, 2),
+        "avg_win":          round(tm.avg_win, 2),
+        "avg_loss":         round(tm.avg_loss, 2),
+    }
+
+
 def compute_all_statistics(
     equity_curve: List[Dict],
     pnl_list: List[float],
@@ -421,6 +497,9 @@ def compute_all_statistics(
 ) -> Dict[str, Any]:
     """
     Compute every metric in one call.
+
+    Tries the C++ fast path first (single-pass, zero Pandas).
+    Falls back to the pure-Python implementation if C++ module is unavailable.
 
     Parameters
     ----------
@@ -434,6 +513,17 @@ def compute_all_statistics(
     -------
     dict with all metric keys
     """
+    # ── Try C++ fast path ──
+    cpp_result = _try_cpp_statistics(
+        equity_curve, pnl_list, initial_capital, trading_days, risk_free_rate
+    )
+    if cpp_result is not None:
+        logger.info("⚡ Statistics computed via C++ fast path")
+        return cpp_result
+
+    # ── Fallback: Python path ──
+    logger.info("📊 Statistics computed via Python fallback path")
+
     # Final equity from curve
     if equity_curve:
         final_equity = float(equity_curve[-1].get("equity", initial_capital))
@@ -470,3 +560,60 @@ def compute_all_statistics(
         "avg_win":          avg_win,
         "avg_loss":         avg_loss,
     }
+
+
+# ────────────────────────────────────────────────────────────
+# 7.  EQUITY CURVE DOWNSAMPLING
+# ────────────────────────────────────────────────────────────
+
+def downsample_equity_curve(
+    equity_curve: List[Dict],
+    max_points: int = 500,
+) -> List[Dict]:
+    """
+    Downsample an equity curve to at most max_points for frontend rendering.
+    Uses C++ LTTB (Largest-Triangle-Three-Buckets) if available,
+    otherwise uses simple stride-based decimation.
+    """
+    if len(equity_curve) <= max_points:
+        return equity_curve
+
+    try:
+        import kira_engine as ke
+
+        # Convert to (timestamp_ms, equity) pairs for C++
+        cpp_curve = []
+        for pt in equity_curve:
+            ts = pt.get("timestamp")
+            eq = float(pt.get("equity", 0))
+            if ts is None:
+                continue
+            if isinstance(ts, (int, float)):
+                ts_ms = int(ts)
+            elif hasattr(ts, "timestamp"):
+                ts_ms = int(ts.timestamp() * 1000)
+            else:
+                try:
+                    ts_ms = int(pd.Timestamp(ts).timestamp() * 1000)
+                except Exception:
+                    continue
+            cpp_curve.append((ts_ms, eq))
+
+        if len(cpp_curve) > max_points:
+            downsampled = ke.downsample_lttb(cpp_curve, max_points)
+            # Convert back to dicts
+            return [
+                {"time": datetime.fromtimestamp(ts / 1000.0).isoformat(), "equity": eq}
+                for ts, eq in downsampled
+            ]
+
+    except ImportError:
+        pass
+
+    # Fallback: stride-based decimation (keeps first + last + every Nth)
+    stride = max(1, len(equity_curve) // max_points)
+    result = equity_curve[::stride]
+    if result[-1] != equity_curve[-1]:
+        result.append(equity_curve[-1])
+    return result
+

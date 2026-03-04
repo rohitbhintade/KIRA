@@ -32,6 +32,7 @@ interface LogEntry {
 
 export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { strategyName: string, strategyCode: string, projectFiles?: Record<string, string> }) {
     const [isOpen, setIsOpen] = useState(false);
+    const [visibleTradeCount, setVisibleTradeCount] = useState(100);
     const [activeRunId, setActiveRunId] = useState<string | null>(null);
     const [lastRunId, setLastRunId] = useState<string | null>(null);
     const pollIntervalRef = React.useRef<NodeJS.Timeout | null>(null);
@@ -282,13 +283,16 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                 const tradesData = await tradesRes.json();
                                 setTrades(tradesData);
 
-                                // Always construct graph history
+                                // Always construct graph history (downsampled to ≤500 points)
                                 let currentEquity = config.cash;
                                 let estBrokerage = 0;
                                 const hist = [{ time: config.startDate, equity: currentEquity }];
 
                                 if (tradesData.length > 0) {
-                                    tradesData.forEach((t: Trade) => {
+                                    // Stride-sample: only push every Nth trade for the chart
+                                    const maxChartPts = 500;
+                                    const stride = Math.max(1, Math.floor(tradesData.length / maxChartPts));
+                                    tradesData.forEach((t: Trade, idx: number) => {
                                         currentEquity += (t.pnl || 0);
 
                                         // Estimate Brokerage
@@ -298,10 +302,13 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                         const gst = flat * 0.18;
                                         estBrokerage += flat + stt + gst;
 
-                                        hist.push({
-                                            time: new Date(t.time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
-                                            equity: currentEquity
-                                        });
+                                        // Only push chart point every Nth trade (or last trade)
+                                        if ((idx + 1) % stride === 0 || idx === tradesData.length - 1) {
+                                            hist.push({
+                                                time: new Date(t.time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+                                                equity: currentEquity
+                                            });
+                                        }
                                     });
 
                                     const totalPnL = tradesData.reduce((acc: number, t: Trade) => acc + (t.pnl || 0), 0);
@@ -314,11 +321,10 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                     }));
                                 }
 
-                                // Always push the latest point (even if 0 trades) so AreaChart renders a line
+                                // Always push the latest point
                                 if (isFinished) {
                                     hist.push({ time: config.endDate, equity: currentEquity });
                                 } else {
-                                    // Live continuous flatline point based on latest log time
                                     const latestTime = parsedLogs.length > 0 ? parsedLogs[parsedLogs.length - 1].time : new Date().toLocaleTimeString();
                                     if (latestTime) {
                                         hist.push({ time: latestTime, equity: currentEquity });
@@ -734,7 +740,7 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                             </td>
                                         </tr>
                                     ) : (
-                                        trades.map((t, idx) => (
+                                        trades.slice(0, visibleTradeCount).map((t, idx) => (
                                             <tr key={idx} className="hover:bg-[#151518] transition-colors">
                                                 <td className="px-4 py-2 text-slate-400">{new Date(t.time).toLocaleString('en-US', { hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
                                                 <td className="px-4 py-2 font-medium text-slate-300">{t.symbol.split('|').pop()}</td>
@@ -751,6 +757,16 @@ export function BacktestRunner({ strategyName, strategyCode, projectFiles }: { s
                                     )}
                                 </tbody>
                             </table>
+                            {trades.length > visibleTradeCount && (
+                                <div className="flex justify-center py-3 border-t border-slate-800">
+                                    <button
+                                        className="text-sm text-blue-400 hover:text-blue-300 font-mono transition-colors"
+                                        onClick={() => setVisibleTradeCount(prev => prev + 200)}
+                                    >
+                                        Show More ({trades.length - visibleTradeCount} remaining)
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>

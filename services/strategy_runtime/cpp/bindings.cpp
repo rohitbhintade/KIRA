@@ -1,11 +1,12 @@
 // PyBind11 bindings for the KIRA C++ backtesting engine.
-// Exposes KiraEngine, indicators, and order records to Python.
+// Exposes KiraEngine, indicators, order records, and statistics to Python.
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/functional.h>
 
 #include "kira_engine.h"
+#include "statistics.h"
 
 namespace py = pybind11;
 using namespace kira;
@@ -23,6 +24,22 @@ PYBIND11_MODULE(kira_engine, m) {
         .def_readonly("pnl",          &OrderRecord::pnl)
         .def_readonly("has_pnl",      &OrderRecord::has_pnl)
         .def_readonly("timestamp_ms", &OrderRecord::timestamp_ms);
+
+    // ── DrawdownResult ──
+    py::class_<stats::DrawdownResult>(m, "DrawdownResult")
+        .def_readonly("max_drawdown_pct", &stats::DrawdownResult::max_drawdown_pct)
+        .def_readonly("peak_idx",         &stats::DrawdownResult::peak_idx)
+        .def_readonly("trough_idx",       &stats::DrawdownResult::trough_idx)
+        .def_readonly("duration_days",    &stats::DrawdownResult::duration_days);
+
+    // ── TradeMetrics ──
+    py::class_<stats::TradeMetrics>(m, "TradeMetrics")
+        .def_readonly("win_rate",      &stats::TradeMetrics::win_rate)
+        .def_readonly("profit_factor", &stats::TradeMetrics::profit_factor)
+        .def_readonly("expectancy",    &stats::TradeMetrics::expectancy)
+        .def_readonly("avg_win",       &stats::TradeMetrics::avg_win)
+        .def_readonly("avg_loss",      &stats::TradeMetrics::avg_loss)
+        .def_readonly("total_trades",  &stats::TradeMetrics::total_trades);
 
     // ── KiraEngine ──
     py::class_<KiraEngine>(m, "KiraEngine")
@@ -86,4 +103,52 @@ PYBIND11_MODULE(kira_engine, m) {
         .def("get_orders",       &KiraEngine::get_orders)
         .def("get_trade_count",  &KiraEngine::get_trade_count)
         .def("get_equity_curve", &KiraEngine::get_equity_curve);
+
+    // ================================================================
+    //  Statistics Module — Pure C++ financial metrics
+    // ================================================================
+
+    m.def("build_daily_returns", &stats::build_daily_returns,
+          py::arg("equity_curve"), py::arg("initial_capital"),
+          "Build daily percentage returns from an equity curve.");
+
+    m.def("compute_sharpe", &stats::compute_sharpe,
+          py::arg("returns"),
+          py::arg("risk_free_rate") = 0.06,
+          py::arg("ann_factor") = 252,
+          "Annualised Sharpe Ratio (single-pass).");
+
+    m.def("compute_sortino", &stats::compute_sortino,
+          py::arg("returns"),
+          py::arg("risk_free_rate") = 0.06,
+          py::arg("ann_factor") = 252,
+          "Sortino Ratio — penalises downside volatility only.");
+
+    m.def("compute_max_drawdown_cpp", &stats::compute_max_drawdown,
+          py::arg("equity_curve"),
+          "Maximum drawdown (single-pass peak tracking). Returns DrawdownResult.");
+
+    m.def("compute_cagr", &stats::compute_cagr,
+          py::arg("initial"), py::arg("final_val"), py::arg("trading_days"),
+          "Compound Annual Growth Rate (%).");
+
+    m.def("compute_calmar", &stats::compute_calmar,
+          py::arg("cagr_pct"), py::arg("max_dd_pct"),
+          "Calmar Ratio = CAGR / |MaxDrawdown|.");
+
+    m.def("compute_trade_metrics", &stats::compute_trade_metrics,
+          py::arg("pnl_list"),
+          "Compute trade-level metrics from PnL list. Returns TradeMetrics.");
+
+    m.def("downsample_lttb", &stats::downsample_lttb,
+          py::arg("data"), py::arg("max_points"),
+          "LTTB downsampling of equity curve to max_points.");
+
+    m.def("compute_total_return", &stats::compute_total_return,
+          py::arg("initial"), py::arg("final_val"),
+          "Total return as a percentage.");
+
+    m.def("compute_net_profit", &stats::compute_net_profit,
+          py::arg("initial"), py::arg("final_val"),
+          "Absolute net profit/loss.");
 }

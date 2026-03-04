@@ -1,1 +1,1 @@
-from .main import SwingDeliveryStrategy
+from .main import CNCSwingSimple

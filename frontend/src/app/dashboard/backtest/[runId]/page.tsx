@@ -55,6 +55,7 @@ export default function BacktestResultPage() {
     const [stats, setStats] = useState<Stats | null>(null);
     const [equityCurve, setEquityCurve] = useState<EquityCurvePoint[]>([]);
     const [statsError, setStatsError] = useState<string | null>(null);
+    const [visibleTradeCount, setVisibleTradeCount] = useState(100);
 
     useEffect(() => {
         if (!runId) return;
@@ -93,35 +94,21 @@ export default function BacktestResultPage() {
             setStatsError(statsData.error);
         }
 
-        // Map API stock_name → Trade.name (API resolves names via instruments table)
-        const mappedTrades: Trade[] = tradesData.map(t => ({
-            ...t,
-            name: t.stock_name || t.name || t.symbol?.replace(/^(NSE_EQ|BSE_EQ)\|/, '') || 'UNKNOWN',
-        }));
-        setTrades(mappedTrades);
-
+        // Map trades + compute brokerage in a single pass
         const initialCash = 100000;
-        let currentEquity = initialCash;
         let estBrokerage = 0;
-
-        // Equity Curve Generation
-        const curve = [{ time: 'Start', equity: initialCash }];
-
-        tradesData.forEach(t => {
+        const mappedTrades: Trade[] = tradesData.map(t => {
             const turnover = t.price * Math.abs(t.quantity);
             const flat = Math.min(20, turnover * 0.0003);
             const stt = t.side === 'SELL' ? turnover * 0.00025 : 0;
             const gst = flat * 0.18;
             estBrokerage += flat + stt + gst;
-
-            if (t.pnl !== null && t.pnl !== undefined && t.pnl !== 0) {
-                currentEquity += t.pnl;
-                curve.push({
-                    time: new Date(t.time).toLocaleTimeString(),
-                    equity: currentEquity
-                });
-            }
+            return {
+                ...t,
+                name: t.stock_name || t.name || t.symbol?.replace(/^(NSE_EQ|BSE_EQ)\|/, '') || 'UNKNOWN',
+            };
         });
+        setTrades(mappedTrades);
 
         if (statsData && statsData.sharpe_ratio !== undefined) {
             setStats({
@@ -142,18 +129,24 @@ export default function BacktestResultPage() {
                 brokeragePaid: estBrokerage
             });
 
-            if (statsData.equity_curve && Array.isArray(statsData.equity_curve)) {
+            // Use precomputed & downsampled equity curve from backend (≤500 points)
+            if (statsData.equity_curve && Array.isArray(statsData.equity_curve) && statsData.equity_curve.length > 0) {
                 const engineCurve = statsData.equity_curve.map((pt: { time: string, equity: number }) => ({
                     time: new Date(pt.time).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
                     equity: pt.equity
                 }));
-                if (engineCurve.length > 0) {
-                    if (engineCurve.length === 1) engineCurve.push({ time: 'End', equity: engineCurve[0].equity });
-                    setEquityCurve(engineCurve);
-                    return;
-                }
+                if (engineCurve.length === 1) engineCurve.push({ time: 'End', equity: engineCurve[0].equity });
+                setEquityCurve(engineCurve);
+                return;
             }
         } else {
+            // Fallback: compute basic stats from trades
+            let currentEquity = initialCash;
+            tradesData.forEach(t => {
+                if (t.pnl !== null && t.pnl !== undefined && t.pnl !== 0) {
+                    currentEquity += t.pnl;
+                }
+            });
             const netProfit = currentEquity - initialCash;
             const totalReturn = (netProfit / initialCash) * 100;
             const wins = tradesData.filter(t => t.pnl !== null && t.pnl > 0).length;
@@ -179,6 +172,25 @@ export default function BacktestResultPage() {
             });
         }
 
+        // Fallback equity curve from trades (only if backend curve not available)
+        let currentEquity = initialCash;
+        const curve = [{ time: 'Start', equity: initialCash }];
+        // Downsample: only emit every Nth trade for chart if too many
+        const maxChartPoints = 500;
+        const stride = Math.max(1, Math.floor(tradesData.length / maxChartPoints));
+        let idx = 0;
+        tradesData.forEach(t => {
+            if (t.pnl !== null && t.pnl !== undefined && t.pnl !== 0) {
+                currentEquity += t.pnl;
+                idx++;
+                if (idx % stride === 0 || idx === tradesData.length) {
+                    curve.push({
+                        time: new Date(t.time).toLocaleTimeString(),
+                        equity: currentEquity
+                    });
+                }
+            }
+        });
         if (curve.length === 1) curve.push({ time: 'End', equity: currentEquity });
         setEquityCurve(curve);
     };
@@ -455,7 +467,7 @@ export default function BacktestResultPage() {
                             </TableRow>
                         </TableHeader>
                         <TableBody>
-                            {trades.slice().reverse().map((trade, i) => (
+                            {trades.slice().reverse().slice(0, visibleTradeCount).map((trade, i) => (
                                 <TableRow key={i} className="border-slate-800/40 hover:bg-slate-800/20">
                                     <TableCell className="font-mono text-xs text-slate-300">{new Date(trade.time).toLocaleString()}</TableCell>
                                     <TableCell className="text-slate-200">{trade.name !== trade.symbol ? trade.name : trade.symbol}</TableCell>
@@ -482,6 +494,17 @@ export default function BacktestResultPage() {
                             ))}
                         </TableBody>
                     </Table>
+                    {trades.length > visibleTradeCount && (
+                        <div className="flex justify-center mt-4">
+                            <Button
+                                variant="outline"
+                                className="border-slate-700 text-slate-300 hover:bg-slate-800"
+                                onClick={() => setVisibleTradeCount(prev => prev + 200)}
+                            >
+                                Load More ({trades.length - visibleTradeCount} remaining)
+                            </Button>
+                        </div>
+                    )}
                 </CardContent>
             </Card>
         </div>
